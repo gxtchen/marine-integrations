@@ -1207,7 +1207,7 @@ class SBE37Protocol(CommandResponseInstrumentProtocol):
         """
         try:
             str_val = self._param_dict.format(param, val)
-            set_cmd = '%s=%s' % (param, str_val)
+            set_cmd = '%s %s' % (param, str_val)
             set_cmd = set_cmd + NEWLINE
 
         except KeyError:
