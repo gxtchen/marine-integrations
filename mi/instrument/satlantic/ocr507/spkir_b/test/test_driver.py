@@ -117,18 +117,24 @@ class DriverTestMixinSub(DriverTestMixin):
     DEFAULT   = ParameterTestConfigKey.DEFAULT
     STATES    = ParameterTestConfigKey.STATES
 
-    _prest_device_id_parameters = {
-        SpkirBIdentificationDataParticleKey.DEVICE_NAME: {TYPE: unicode, VALUE: 'OCR-507', REQUIRED: True },
-        SpkirBIdentificationDataParticleKey.COPY_RIGHT: {TYPE: unicode, VALUE: 'Copyright (C) 2002, Satlantic Inc. All rights reserved.', REQUIRED: False },
-        SpkirBIdentificationDataParticleKey.FIRMWRE_VERSION: {TYPE: unicode, VALUE: '3.0A', REQUIRED: True },
-        SpkirBIdentificationDataParticleKey.INSTRUMENT_TYPE: {TYPE: unicode, VALUE: 'B', REQUIRED: True },
-        SpkirBIdentificationDataParticleKey.INSTRUMENT_ID: {TYPE: unicode, VALUE:  'SATDI7', REQUIRED: True },
-        SpkirBIdentificationDataParticleKey.SERIAL_NUMBER: {TYPE: unicode, VALUE: '0229', REQUIRED: True },
+    ###
+    #  Parameter and Type Definitions
+    ###
+    _driver_parameters = {
+        # Parameters defined in the IOS
+        Parameter.MAX_RATE : {TYPE: float, READONLY: False, DA: True, STARTUP: True, DEFAULT: 0, VALUE: 0},
+        Parameter.INIT_SILENT_MODE : {TYPE: bool, READONLY: True, DA: True, STARTUP: True},
+        Parameter.INIT_AUTO_TELE : {TYPE: bool, READONLY: True, DA: True, STARTUP: False, DEFAULT: True, VALUE: True},
+        }
+
+    _driver_capabilities = {
+        # capabilities defined in the IOS
+        Capability.DISPLAY_ID : {STATES: [ProtocolState.COMMAND]},
     }
 
     _prest_device_config_parameters = {
         SpkirBConfigurationDataParticleKey.TELE_BAUD_RATE: {TYPE: int, VALUE: 57600, REQUIRED: True },
-        SpkirBConfigurationDataParticleKey.MAX_FRAME_RATE: {TYPE: unicode, VALUE: 'AUTO', REQUIRED: True },
+        SpkirBConfigurationDataParticleKey.MAX_FRAME_RATE: {TYPE: float, VALUE: 0, REQUIRED: True },
         SpkirBConfigurationDataParticleKey.INIT_SILENT_MODE: {TYPE: unicode, VALUE: 'off', REQUIRED: True },
         SpkirBConfigurationDataParticleKey.INIT_POWER_DOWN: {TYPE: unicode, VALUE: 'off', REQUIRED: True },
         SpkirBConfigurationDataParticleKey.INIT_AUTO_TELE: {TYPE: unicode, VALUE:  'on', REQUIRED: True },
@@ -165,16 +171,6 @@ class DriverTestMixinSub(DriverTestMixin):
         self.assert_data_particle_keys(SpkirBConfigurationDataParticleKey, self._prest_device_config_parameters)
         self.assert_data_particle_header(data_particle, DataParticleType.PREST_CONFIGURATION_DATA)
         #self.assert_data_particle_parameters(data_particle, self._prest_device_config_parameters, verify_values)
-
-    def assert_particle_id_data(self, data_particle, verify_values = False):
-        '''
-        Verify prest_configuration_data particle
-        @param data_particle:  SBE54tpsSampleDataParticle data particle
-        @param verify_values:  bool, should we verify parameter values
-        '''
-        self.assert_data_particle_keys(SpkirBIdentificationDataParticleKey, self._prest_device_id_parameters)
-        self.assert_data_particle_header(data_particle, DataParticleType.PREST_IDENTIFICATION_DATA)
-        self.assert_data_particle_parameters(data_particle, self._prest_device_id_parameters, verify_values)
 
     def assert_particle_real_time(self, data_particle, verify_values = False):
         '''
@@ -240,11 +236,6 @@ class DriverUnitTest(InstrumentDriverUnitTestCase, DriverTestMixinSub):
         """
         chunker = StringChunker(Protocol.sieve_function)
 
-        self.assert_chunker_sample(chunker, SAMPLE_ID)
-        self.assert_chunker_sample_with_noise(chunker, SAMPLE_ID)
-        self.assert_chunker_fragmented_sample(chunker, SAMPLE_ID, 32)
-        self.assert_chunker_combined_sample(chunker, SAMPLE_ID)
-
         self.assert_chunker_sample(chunker, SAMPLE_SHOWALL)
         self.assert_chunker_sample_with_noise(chunker, SAMPLE_SHOWALL)
         self.assert_chunker_fragmented_sample(chunker, SAMPLE_SHOWALL, 32)
@@ -267,7 +258,6 @@ class DriverUnitTest(InstrumentDriverUnitTestCase, DriverTestMixinSub):
         self.assert_raw_particle_published(driver, True)
 
         # Start validating data particles
-        self.assert_particle_published(driver, SAMPLE_ID, self.assert_particle_id_data, True)
         self.assert_particle_published(driver, SAMPLE_SHOWALL, self.assert_particle_configuration_data, True)
         self.assert_particle_published(driver, SAMPLE_SAMPLE, self.assert_particle_real_time, True)
         
@@ -299,13 +289,22 @@ class DriverUnitTest(InstrumentDriverUnitTestCase, DriverTestMixinSub):
             ProtocolState.COMMAND: ['DRIVER_EVENT_GET',
                                     'DRIVER_EVENT_SET',
                                     'DRIVER_EVENT_START_AUTOSAMPLE',
-                                    'DRIVER_EVENT_START_DIRECT'],
+                                    'DRIVER_EVENT_START_DIRECT',
+                                    'DRIVER_EVENT_ID'],
             ProtocolState.AUTOSAMPLE: ['DRIVER_EVENT_STOP_AUTOSAMPLE'],
             ProtocolState.DIRECT_ACCESS: ['DRIVER_EVENT_STOP_DIRECT', 'EXECUTE_DIRECT']
         }
 
         driver = InstrumentDriver(self._got_data_event_callback)
         self.assert_capabilities(driver, capabilities)
+
+    def test_driver_schema(self):
+        """
+        get the driver schema and verify it is configured properly
+        """
+        driver = InstrumentDriver(self._got_data_event_callback)
+        self.assert_driver_schema(driver, self._driver_parameters, self._driver_capabilities)
+
 
 ###############################################################################
 #                            INTEGRATION TESTS                                #

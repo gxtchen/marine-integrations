@@ -266,9 +266,9 @@ class SpkirBIdentificationDataParticle(DataParticle):
 class SpkirBConfigurationDataParticleKey(BaseEnum):
     TELE_BAUD_RATE = "tele_baud_rate"
     MAX_FRAME_RATE = "max_frame_rate"
-    INIT_SILENT_MODE = "init_silent_mode"
-    INIT_POWER_DOWN = "init_instrument_type"
-    INIT_AUTO_TELE = "init_auto_tele"
+    INIT_SILENT_MODE = "initialize_silent_mode"
+    INIT_POWER_DOWN = "initialize_power_down"
+    INIT_AUTO_TELE = "initialize_auto_telemetry"
     NETWORK_MODE = "network_mode"
     NETWORK_ADDRESS = "network_address"
     NETWORK_BAUD_RATE = "network_baud_rate"
@@ -347,14 +347,15 @@ class SpkirBConfigurationDataParticle(DataParticle):
 
                          # str
                         if key in [
-                            SpkirBConfigurationDataParticleKey.MAX_FRAME_RATE,
                             SpkirBConfigurationDataParticleKey.INIT_SILENT_MODE,
                             SpkirBConfigurationDataParticleKey.INIT_POWER_DOWN,
                             SpkirBConfigurationDataParticleKey.INIT_AUTO_TELE,
                             SpkirBConfigurationDataParticleKey.NETWORK_MODE
                         ]:
                             single_var_matches[key] = val
-
+                        # float
+                        elif (key == SpkirBConfigurationDataParticleKey.MAX_FRAME_RATE):
+                            single_var_matches[key] = float(val)
                         # int
                         elif key in [
                             SpkirBConfigurationDataParticleKey.TELE_BAUD_RATE,
@@ -376,7 +377,7 @@ class SpkirBConfigurationDataParticle(DataParticle):
         return result
     
 class SpkirBSampleDataParticleKey(BaseEnum):
-    INSTRUMENT = "instrument"
+    INSTRUMENT = "instrument_id"
     SN = "serial_number"
     TIMER = "timer"
     DELAY = "sample_delay"
@@ -390,8 +391,8 @@ class SpkirBSampleDataParticleKey(BaseEnum):
     VIN = "vin_sense"
     VA = "va_sense"
     TEMP = "internal_temperature"
-    FRMCOUNT = "frame_count"
-    CHKSUM = "check_sum"
+    FRMCOUNT = "frame_counter"
+    CHKSUM = "checksum"
     
 class SpkirBSampleDataParticle(DataParticle):
     """
@@ -545,6 +546,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         self._protocol_fsm.add_handler(ProtocolState.COMMAND, ProtocolEvent.START_DIRECT, self._handler_command_start_direct)
         self._protocol_fsm.add_handler(ProtocolState.COMMAND, ProtocolEvent.GET, self._handler_command_get)
         self._protocol_fsm.add_handler(ProtocolState.COMMAND, ProtocolEvent.SET, self._handler_command_set)
+        self._protocol_fsm.add_handler(ProtocolState.COMMAND, ProtocolEvent.DISPLAY_ID, self._handler_command_display_id)
         self._protocol_fsm.add_handler(ProtocolState.COMMAND, ProtocolEvent.START_AUTOSAMPLE, self._handler_command_start_autosample)
 
         self._protocol_fsm.add_handler(ProtocolState.AUTOSAMPLE, ProtocolEvent.ENTER, self._handler_autosample_enter)
@@ -558,6 +560,8 @@ class Protocol(CommandResponseInstrumentProtocol):
 
         # Construct the parameter dictionary containing device parameters,
         # current parameter values, and set formatting functions.
+        self._build_driver_dict()
+        self._build_command_dict()
         self._build_param_dict()
 
         # Add build handlers for device commands.
@@ -591,8 +595,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         The method that splits samples
         """
         sieve_matchers = [SAMPLE_PATTERN_MATCHER,
-                          CONFIGURATION_DATA_REGEX_MATCHER,
-                           IDENTIFICATION_DATA_REGEX_MATCHER]
+                          CONFIGURATION_DATA_REGEX_MATCHER]
 
         return_list = []
 
@@ -614,6 +617,7 @@ class Protocol(CommandResponseInstrumentProtocol):
                              lambda match : float(match.group(1)),
                              self._float_to_string,
                              default_value=0,
+                             display_name='Maximum frame rate (Hz)',
                              startup_param=True,
                              type=ParameterDictType.FLOAT)
         self._param_dict.add(Parameter.INIT_SILENT_MODE,
@@ -622,6 +626,7 @@ class Protocol(CommandResponseInstrumentProtocol):
                              self._true_false_to_string,
                              visibility = ParameterDictVisibility.READ_ONLY,
                              default_value=True,
+                             display_name='Initialize silent mode (on|off)',
                              startup_param=True,
                              type=ParameterDictType.BOOL)
         self._param_dict.add(Parameter.INIT_AUTO_TELE,
@@ -629,8 +634,15 @@ class Protocol(CommandResponseInstrumentProtocol):
                              lambda match : False if (match.group(1)=='off') else True,
                              self._true_false_to_string,
                              visibility = ParameterDictVisibility.READ_ONLY,
+                             display_name='Initialize auto telemetry (on|off)',
                              type=ParameterDictType.BOOL)
         
+    def _build_driver_dict(self):
+        """
+        Populate the driver dictionary with options
+        """
+        self._driver_dict.add(DriverDictKey.VENDOR_SW_COMPATIBLE, True)
+
     def _build_command_dict(self):
         """
         Populate the command dictionary with command.
@@ -644,7 +656,6 @@ class Protocol(CommandResponseInstrumentProtocol):
         """
         if(self._extract_sample(SpkirBSampleDataParticle, SAMPLE_PATTERN_MATCHER, chunk, timestamp)) : return
         if(self._extract_sample(SpkirBConfigurationDataParticle, CONFIGURATION_DATA_REGEX_MATCHER, chunk, timestamp)) : return
-        if(self._extract_sample(SpkirBIdentificationDataParticle, IDENTIFICATION_DATA_REGEX_MATCHER, chunk, timestamp)) : return
         
     def _filter_capabilities(self, events):
         """
@@ -819,6 +830,27 @@ class Protocol(CommandResponseInstrumentProtocol):
         next_agent_state = ResourceAgentState.COMMAND
 
         return (next_state, (next_agent_state, result))
+    
+    def _handler_command_display_id(self, *args, **kwargs):
+        """
+        command instrument to return its identification information like type, firmware version...
+        """
+        log.debug("%%% IN _handler_command_display_id")
+
+        next_state = None
+        result = None
+
+        # Issue the stop command.
+        self._do_cmd_resp(InstrumentCommand.DISPLAY_ID_BANNER, *args, **kwargs)
+
+        # Prompt device until command prompt is seen.
+        self._wakeup_until(timeout, Prompt.COMMAND)
+
+        next_state = ProtocolState.COMMAND
+        next_agent_state = ResourceAgentState.COMMAND
+
+        return (next_state, (next_agent_state, result))
+        
     
     def _handler_command_start_autosample(self, *args, **kwargs):
         """

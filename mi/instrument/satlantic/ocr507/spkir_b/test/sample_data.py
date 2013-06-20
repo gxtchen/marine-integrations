@@ -10,7 +10,7 @@ SAMPLE_ID =  "Satlantic OCR-507 Multispectral Radiometer" + NEWLINE + \
                 "S/N: 0229" + NEWLINE
 
 SAMPLE_SHOWALL =  "Telemetry Baud Rate: 57600 bps" + NEWLINE +\
-                "Maximum Frame Rate: AUTO" + NEWLINE +\
+                "Maximum Frame Rate: 0" + NEWLINE +\
                 "Initialize Silent Mode: off" + NEWLINE +\
                 "Initialize Power Down: off" + NEWLINE +\
                 "Initialize Automatic Telemetry: on" + NEWLINE +\
