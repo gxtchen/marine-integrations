@@ -1,0 +1,8 @@
+driver_metadata:
+  author: Gary Chen
+  driver_make: satlantic
+  driver_model: ocr507
+  driver_name: spkir_b
+  email: garyxchen@gmail.com
+  release_notes: 'initializing Spkir driver development. '
+  version: 0.0.1
