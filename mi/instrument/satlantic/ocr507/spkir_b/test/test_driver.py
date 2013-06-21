@@ -56,7 +56,6 @@ from mi.instrument.satlantic.ocr507.spkir_b.driver import Parameter
 from mi.instrument.satlantic.ocr507.spkir_b.driver import Protocol
 from mi.instrument.satlantic.ocr507.spkir_b.driver import Prompt
 from mi.instrument.satlantic.ocr507.spkir_b.driver import NEWLINE
-from mi.instrument.satlantic.ocr507.spkir_b.driver import SpkirBIdentificationDataParticleKey
 from mi.instrument.satlantic.ocr507.spkir_b.driver import SpkirBConfigurationDataParticleKey
 from mi.instrument.satlantic.ocr507.spkir_b.driver import SpkirBSampleDataParticleKey
 
