@@ -127,7 +127,7 @@ class InstrumentCommand(BaseEnum):
     """
     DISPLAY_ID_BANNER = 'id'        # Displays the instrument identification banner
     SET = 'set'                     # Sets the instrument's configuration parameters
-    SHOW = 'show'                   # Shows the instrument's configuration parameters
+    SHOW = 'show all'                   # Shows the instrument's configuration parameters
     STOP_SAMPLING = CONTRL_C        # send a "control-C" value to stop auto sampling
     START_SAMPLING = 'exit'         # exit command mode.
     SAVE = 'save'                   # save configuration changes
@@ -172,20 +172,20 @@ class InstrumentDriver(SingleConnectionInstrumentDriver):
         """
         self._protocol = Protocol(Prompt, NEWLINE, self._driver_event)
 
-    def apply_startup_params(self):
+    ########################################################################
+    # Superclass overrides for resource query.
+    ########################################################################
+
+    def get_resource_params(self):
         """
-        Overload the default behavior which is to pass the buck to the protocol.
-        Alternatively we could retrofit the protocol to better handle the apply
-        startup params feature which would be preferred in production drivers.
-        @raise InstrumentParameterException If the config cannot be applied
+        Return list of device parameters available.
         """
-        config = self._protocol.get_startup_config()
+        return Parameter.list()
 
-        if not isinstance(config, dict):
-            raise InstrumentParameterException("Incompatible initialization parameters")
 
-        self.set_resource(config)
-
+"""
+Keeping these two classes here for future requirement, not used right now.
+"""
 class SpkirBIdentificationDataParticleKey(BaseEnum):
     DEVICE_NAME = "device_name"
     COPY_RIGHT = "copy_right"
@@ -288,7 +288,6 @@ class SpkirBConfigurationDataParticle(DataParticle):
     LINE7 = r"Network Address: (\d+)"
     LINE8 = r"Network Baud Rate: (\d+) bps"
     
-    
     def _build_parsed_values(self):
         """
         Take something in the StatusData format and split it into
@@ -308,65 +307,53 @@ class SpkirBConfigurationDataParticle(DataParticle):
             SpkirBConfigurationDataParticleKey.NETWORK_ADDRESS: None,            
             SpkirBConfigurationDataParticleKey.NETWORK_BAUD_RATE: None,
         }
+        
+        regex = [re.compile(self.LINE1), 
+                 re.compile(self.LINE2), 
+                 re.compile(self.LINE3), 
+                 re.compile(self.LINE4), 
+                 re.compile(self.LINE5), 
+                 re.compile(self.LINE6), 
+                 re.compile(self.LINE7), 
+                 re.compile(self.LINE8)]
+        
+        keys = [SpkirBConfigurationDataParticleKey.TELE_BAUD_RATE,
+                SpkirBConfigurationDataParticleKey.MAX_FRAME_RATE,
+                SpkirBConfigurationDataParticleKey.INIT_SILENT_MODE,
+                SpkirBConfigurationDataParticleKey.INIT_POWER_DOWN,
+                SpkirBConfigurationDataParticleKey.INIT_AUTO_TELE,
+                SpkirBConfigurationDataParticleKey.NETWORK_MODE,
+                SpkirBConfigurationDataParticleKey.NETWORK_ADDRESS,
+                SpkirBConfigurationDataParticleKey.NETWORK_BAUD_RATE]
 
-        multi_var_matchers  = {
-            re.compile(self.LINE1): [
-                SpkirBConfigurationDataParticleKey.TELE_BAUD_RATE
-            ],
-            re.compile(self.LINE2): [
-                SpkirBConfigurationDataParticleKey.MAX_FRAME_RATE
-            ],
-            re.compile(self.LINE3): [
-                SpkirBConfigurationDataParticleKey.INIT_SILENT_MODE
-            ],
-            re.compile(self.LINE4): [
-                SpkirBConfigurationDataParticleKey.INIT_POWER_DOWN
-            ],
-            re.compile(self.LINE5): [
-                SpkirBConfigurationDataParticleKey.INIT_AUTO_TELE
-            ],
-            re.compile(self.LINE6): [
-                SpkirBConfigurationDataParticleKey.NETWORK_MODE
-            ],
-            re.compile(self.LINE7): [
-                SpkirBConfigurationDataParticleKey.NETWORK_ADDRESS
-            ],
-            re.compile(self.LINE8): [
-                SpkirBConfigurationDataParticleKey.NETWORK_BAUD_RATE
-            ]
-        }
-
+        index = 0
         for line in self.raw_data.split(NEWLINE):
-            for (matcher, keys) in multi_var_matchers.iteritems():
-                match = matcher.match(line)
-                if match:
-                    index = 0
-                    for key in keys:
-                        index = index + 1
-                        val = match.group(index)
-
-                         # str
-                        if key in [
+            match = regex[index].match(line)
+            if match:
+                val = match.group(1)
+                if keys[index] in [
                             SpkirBConfigurationDataParticleKey.INIT_SILENT_MODE,
                             SpkirBConfigurationDataParticleKey.INIT_POWER_DOWN,
                             SpkirBConfigurationDataParticleKey.INIT_AUTO_TELE,
                             SpkirBConfigurationDataParticleKey.NETWORK_MODE
-                        ]:
-                            single_var_matches[key] = val
-                        # float
-                        elif (key == SpkirBConfigurationDataParticleKey.MAX_FRAME_RATE):
-                            single_var_matches[key] = float(val)
-                        # int
-                        elif key in [
-                            SpkirBConfigurationDataParticleKey.TELE_BAUD_RATE,
-                            SpkirBConfigurationDataParticleKey.NETWORK_ADDRESS,
-                            SpkirBConfigurationDataParticleKey.NETWORK_BAUD_RATE
-                        ]:
-                            single_var_matches[key] = int(val)
-
-                        else:
-                            raise SampleException("Unknown variable type in SpkirBConfigurationDataParticle._build_parsed_values")
-
+                ]:
+                    single_var_matches[keys[index]] = val
+                elif (keys[index] == SpkirBConfigurationDataParticleKey.MAX_FRAME_RATE):
+                    single_var_matches[keys[index]] = float(val)
+                elif keys[index] in [
+                    SpkirBConfigurationDataParticleKey.TELE_BAUD_RATE,
+                    SpkirBConfigurationDataParticleKey.NETWORK_ADDRESS,
+                    SpkirBConfigurationDataParticleKey.NETWORK_BAUD_RATE
+                ]:
+                    single_var_matches[keys[index]] = int(val)
+                else:
+                     raise SampleException("Unknown variable type in SpkirBConfigurationDataParticle._build_parsed_values")
+                
+                # only expecting 8 lines, if we are in line 9, then
+                # let the empty line match with Line8 and fail
+                # log.debug("index %s, value %s " %(index, val))
+                if (index < 7):
+                    index += 1
 
         result = []
         for (key, value) in single_var_matches.iteritems():
@@ -568,13 +555,14 @@ class Protocol(CommandResponseInstrumentProtocol):
         self._add_build_handler(InstrumentCommand.START_SAMPLING,          self._build_simple_command)
         self._add_build_handler(InstrumentCommand.STOP_SAMPLING,           self._build_simple_command)
         self._add_build_handler(InstrumentCommand.DISPLAY_ID_BANNER,       self._build_simple_command)
-        self._add_build_handler(InstrumentCommand.SHOW,                    self._build_show_command)
+        self._add_build_handler(InstrumentCommand.SHOW,                    self._build_simple_command)
         self._add_build_handler(InstrumentCommand.SET,                     self._build_set_command)
 
         # Add response handlers for device commands.
-        self._add_response_handler(InstrumentCommand.SAVE, self._parse_set_response)
+        self._add_response_handler(InstrumentCommand.SET, self._parse_set_response)
         self._add_response_handler(InstrumentCommand.SAVE, self._parse_save_response)
-
+        self._add_response_handler(InstrumentCommand.SHOW, self._parse_show_response)
+        
         # Add sample handlers.
 
         # State state machine in UNKNOWN state.
@@ -965,26 +953,6 @@ class Protocol(CommandResponseInstrumentProtocol):
 
         return set_cmd
 
-    def _build_show_command(self, cmd, param, val):
-        """
-        Build handler for get commands. param=val followed by newline.
-        String val constructed by param dict formatting function.
-        @param param the parameter key to set.
-        @param val the parameter value to set.
-        @ retval The get command to be sent to the device.
-        @throws InstrumentProtocolException if the parameter is not valid or
-        if the formatting function could not accept the value passed.
-        """
-        try:
-            str_val = self._param_dict.format(param, val)
-            set_cmd = '%s %s' % (param, str_val)
-            set_cmd = set_cmd + NEWLINE
-
-        except KeyError:
-            raise InstrumentParameterException('Unknown driver parameter %s' % param)
-
-        return set_cmd
-
     def _parse_set_response(self, response, prompt):
         """
         Parse handler for set command.
@@ -1007,6 +975,17 @@ class Protocol(CommandResponseInstrumentProtocol):
         if response.strip() != InstrumentResponse.SAVE:
             raise InstrumentProtocolException('Save command not set.')
         
+    def _parse_show_response(self, response, prompt):
+        """
+        Parse handler for save command.
+        @param response command response string.
+        @param prompt prompt following command response.
+        @throws InstrumentProtocolException if set command misunderstood.
+        """
+        response = response.replace(NEWLINE, "")
+
+        log.debug("IN _parse_show_response RESPONSE = " + repr(response))
+        return response
 
     
     ########################################################################
