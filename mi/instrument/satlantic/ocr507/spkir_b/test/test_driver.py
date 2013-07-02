@@ -16,39 +16,49 @@ USAGE:
 __author__ = 'Gary Chen'
 __license__ = 'Apache 2.0'
 
+from gevent import monkey; monkey.patch_all()
+import gevent
+
 import unittest
 import re
+from mi.core.unit_test import MiTestCase
 import time
-
+import json
+from mock import Mock, call, DEFAULT
+from pyon.util.unit_test import PyonTestCase
 from nose.plugins.attrib import attr
-from mock import Mock
+from unittest import TestCase
 
 from mi.core.log import get_logger ; log = get_logger()
 
-# MI imports.
+from mi.core.common import InstErrorCode
+from mi.core.instrument.instrument_driver import DriverState
+from mi.core.instrument.instrument_driver import DriverConnectionState
+from mi.core.instrument.instrument_driver import DriverProtocolState
+from mi.core.instrument.instrument_driver import DriverEvent
+from mi.core.instrument.instrument_protocol import InterfaceType
+from mi.core.instrument.data_particle import DataParticleKey
+from mi.core.instrument.data_particle import DataParticleValue
+from mi.core.instrument.chunker import StringChunker
+
+from mi.idk.unit_test import DriverTestMixin
 from mi.idk.unit_test import ParameterTestConfigKey
-from mi.idk.unit_test import AgentCapabilityType
+
+from mi.core.exceptions import InstrumentProtocolException
+from mi.core.exceptions import InstrumentDataException
+from mi.core.exceptions import InstrumentCommandException
+from mi.core.exceptions import InstrumentStateException
+from mi.core.exceptions import InstrumentParameterException
+
 from mi.idk.unit_test import InstrumentDriverTestCase
 from mi.idk.unit_test import InstrumentDriverUnitTestCase
 from mi.idk.unit_test import InstrumentDriverIntegrationTestCase
 from mi.idk.unit_test import InstrumentDriverQualificationTestCase
-from mi.idk.unit_test import DriverTestMixin
-
-from interface.objects import AgentCommand
-
-from mi.core.instrument.logger_client import LoggerClient
-
-from mi.core.instrument.chunker import StringChunker
-from mi.core.instrument.instrument_driver import DriverAsyncEvent
-from mi.core.instrument.instrument_driver import DriverConnectionState
-from mi.core.instrument.instrument_driver import DriverProtocolState
-
-from ion.agents.instrument.instrument_agent import InstrumentAgentState
-from ion.agents.instrument.direct_access.direct_access_server import DirectAccessTypes
+from mi.idk.unit_test import AgentCapabilityType
 
 from mi.instrument.satlantic.ocr507.spkir_b.driver import InstrumentDriver
 from mi.instrument.satlantic.ocr507.spkir_b.driver import DataParticleType
-from mi.instrument.satlantic.ocr507.spkir_b.driver import InstrumentCommand
+from mi.instrument.satlantic.ocr507.spkir_b.driver import Command
 from mi.instrument.satlantic.ocr507.spkir_b.driver import ProtocolState
 from mi.instrument.satlantic.ocr507.spkir_b.driver import ProtocolEvent
 from mi.instrument.satlantic.ocr507.spkir_b.driver import Capability
@@ -62,6 +72,12 @@ from mi.instrument.satlantic.ocr507.spkir_b.driver import SpkirBSampleDataPartic
 # SAMPLE DATA FOR TESTING
 from mi.instrument.satlantic.ocr507.spkir_b.test.sample_data import *
 
+from interface.objects import AgentCommand
+from ion.agents.instrument.direct_access.direct_access_server import DirectAccessTypes
+
+from pyon.agent.agent import ResourceAgentState
+from pyon.agent.agent import ResourceAgentEvent
+from pyon.core.exception import Conflict
 ###
 #   Driver parameters for the tests
 ###
@@ -161,6 +177,18 @@ class DriverTestMixinSub(DriverTestMixin):
         SpkirBSampleDataParticleKey.CHKSUM: {TYPE: int, VALUE: 192, REQUIRED: True },
     }
 
+    ###
+    #   Driver Parameter Methods
+    ###
+    def assert_driver_parameters(self, current_parameters, verify_values = False):
+        """
+        Verify that all driver parameters are correct and potentially verify values.
+        @param current_parameters: driver parameters read from the driver instance
+        @param verify_values: should we verify values against definition?
+        """
+        self.assert_parameters(current_parameters, self._driver_parameters, verify_values)
+
+
     def assert_particle_configuration_data(self, data_particle, verify_values = False):
         '''
         Verify prest_configuration_data particle
@@ -222,7 +250,7 @@ class DriverUnitTest(InstrumentDriverUnitTestCase, DriverTestMixinSub):
         self.assert_enum_has_no_duplicates(ProtocolState())
         self.assert_enum_has_no_duplicates(ProtocolEvent())
         self.assert_enum_has_no_duplicates(Parameter())
-        self.assert_enum_has_no_duplicates(InstrumentCommand())
+        self.assert_enum_has_no_duplicates(Command())
 
         # Test capabilites for duplicates, them verify that capabilities is a subset of proto events
         self.assert_enum_has_no_duplicates(Capability())
@@ -313,10 +341,78 @@ class DriverUnitTest(InstrumentDriverUnitTestCase, DriverTestMixinSub):
 #     and common for all drivers (minimum requirement for ION ingestion)      #
 ###############################################################################
 @attr('INT', group='mi')
-class DriverIntegrationTest(InstrumentDriverIntegrationTestCase):
+class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixinSub):
     def setUp(self):
         InstrumentDriverIntegrationTestCase.setUp(self)
 
+    
+    def check_state(self, expected_state):
+        state = self.driver_client.cmd_dvr('get_resource_state')
+        self.assertEqual(state, expected_state)
+
+
+    def put_instrument_in_command_mode(self):
+        """Wrap the steps and asserts for going into command mode.
+           May be used in multiple test cases.
+        """
+        # Test that the driver is in state unconfigured.
+        self.check_state(DriverConnectionState.UNCONFIGURED)
+
+        # Configure driver and transition to disconnected.
+        self.driver_client.cmd_dvr('configure', self.port_agent_comm_config())
+
+        # Test that the driver is in state disconnected.
+        self.check_state(DriverConnectionState.DISCONNECTED)
+
+        # Setup the protocol state machine and the connection to port agent.
+        self.driver_client.cmd_dvr('connect')
+
+        # Test that the driver protocol is in state unknown.
+        self.check_state(ProtocolState.UNKNOWN)
+
+        # Discover what state the instrument is in and set the protocol state accordingly.
+        self.driver_client.cmd_dvr('discover_state')
+
+        # Test that the driver protocol is in state command.
+        self.check_state(ProtocolState.COMMAND)
+
+    def test_get(self):
+        
+        self.put_instrument_in_command_mode()
+
+        params = {
+                   Parameter.MAX_RATE: 1.0,
+                   Parameter.INIT_SILENT_MODE: True,
+                   Parameter.INIT_AUTO_TELE: True,
+        }
+
+        reply = self.driver_client.cmd_dvr('get_resource',
+                                           params.keys(),
+                                           timeout=20)
+        
+        self.assertEquals(reply, params)
+                 
+
+    def test_set(self):
+        config_key = Parameter.MAX_RATE
+        value_A = 12.0
+        value_B = 1.0
+        config_A = {config_key:value_A}
+        config_B = {config_key:value_B}
+        
+        self.put_instrument_in_command_mode()
+        
+        reply = self.driver_client.cmd_dvr('set_resource', config_A, timeout=20)
+        self.assertEquals(reply[config_key], value_A)
+                 
+        reply = self.driver_client.cmd_dvr('get_resource', [config_key], timeout=20)
+        self.assertEquals(reply, config_A)
+        
+        reply = self.driver_client.cmd_dvr('set_resource', config_B, timeout=20)
+        self.assertEquals(reply[config_key], value_B)
+         
+        reply = self.driver_client.cmd_dvr('get_resource', [config_key], timeout=20)
+        self.assertEquals(reply, config_B)
 
 
 ###############################################################################
