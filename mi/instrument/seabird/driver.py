@@ -23,6 +23,9 @@ from mi.core.instrument.instrument_driver import SingleConnectionInstrumentDrive
 from mi.core.instrument.data_particle import DataParticle
 from mi.core.instrument.data_particle import DataParticleKey
 from mi.core.instrument.protocol_param_dict import ParameterDictVisibility
+from mi.core.instrument.instrument_driver import DriverProtocolState
+from mi.core.instrument.instrument_driver import ResourceAgentState
+from mi.core.instrument.instrument_driver import DriverAsyncEvent
 
 from mi.core.instrument.instrument_driver import DriverConnectionState
 from mi.core.instrument.instrument_driver import DriverEvent
@@ -30,6 +33,8 @@ from mi.core.instrument.instrument_driver import DriverEvent
 from mi.core.exceptions import InstrumentProtocolException
 from mi.core.exceptions import InstrumentParameterException
 from mi.core.exceptions import NotImplementedException
+from mi.core.exceptions import SampleException
+
 from mi.core.time import get_timestamp_delayed
 
 NEWLINE = '\r\n'
@@ -156,6 +161,44 @@ class SeaBirdParticle(DataParticle):
 
         return encoder
 
+    def _map_param_to_xml_tag(self, parameter_name):
+        '''
+        @return: a string containing the xml tag name for a parameter
+        '''
+        NotImplementedException()
+
+    def _extract_xml_elements(self, node, tag, raise_exception_if_none_found=True):
+        """
+        extract elements with tag from an XML node
+        @param: node - XML node to look in
+        @param: tag - tag of elements to look for
+        @param: raise_exception_if_none_found - raise an exception if no element is found
+        @return: return list of elements found; empty list if none found
+        """
+        elements = node.getElementsByTagName(tag)
+        if raise_exception_if_none_found and len(elements) == 0:
+            raise SampleException("_extract_xml_elements: No %s in input data: [%s]" % (tag, self.raw_data))
+        return elements
+
+    def _extract_xml_element_value(self, node, tag, raise_exception_if_none_found=True):
+        """
+        extract element value that has tag from an XML node
+        @param: node - XML node to look in
+        @param: tag - tag of elements to look for
+        @param: raise_exception_if_none_found - raise an exception if no value is found
+        @return: return value of element
+        """
+        elements = self._extract_xml_elements(node, tag, raise_exception_if_none_found)
+        children = elements[0].childNodes
+        if raise_exception_if_none_found and len(children) == 0:
+            raise SampleException("_extract_xml_element_value: No value for %s in input data: [%s]" % (tag, self.raw_data))
+        return children[0].nodeValue
+    
+    def _get_xml_parameter(self, xml_element, parameter_name, type=float):
+        return {DataParticleKey.VALUE_ID: parameter_name,
+                DataParticleKey.VALUE: type(self._extract_xml_element_value(xml_element, 
+                                                                            self._map_param_to_xml_tag(parameter_name)))}
+        
     ########################################################################
     # Static helpers.
     ########################################################################
@@ -188,7 +231,7 @@ class SeaBirdParticle(DataParticle):
         @param value: string to convert
         @return: bool
         """
-        if not isinstance(value, str):
+        if not (isinstance(value, str) or isinstance(value, unicode)):
             raise InstrumentParameterException("value not a string")
 
         if(value.lower() == 'no'):
@@ -243,18 +286,6 @@ class SeaBirdInstrumentDriver(SingleConnectionInstrumentDriver):
         """
         #Construct superclass.
         SingleConnectionInstrumentDriver.__init__(self, evt_callback)
-        self._connection_fsm.add_handler(DriverConnectionState.CONNECTED,
-            DriverEvent.DISCOVER,
-            self._handler_connected_discover)
-
-    def _handler_connected_discover(self, event, *args, **kwargs):
-        # Redefine discover handler so that we can apply startup params
-        # when we discover. Gotta get into command mode first though.
-        log.debug("in _handler_connected_discover")
-        result = SingleConnectionInstrumentDriver._handler_connected_protocol_event(self, event, *args, **kwargs)
-        self.apply_startup_params()
-        return result
-
 
 ###############################################################################
 # Protocol
@@ -276,9 +307,75 @@ class SeaBirdProtocol(CommandResponseInstrumentProtocol):
         # Construct protocol superclass.
         CommandResponseInstrumentProtocol.__init__(self, prompts, newline, driver_event)
 
+
     ########################################################################
     # Common handlers
     ########################################################################
+    def _handler_command_enter(self, *args, **kwargs):
+        """
+        Enter command state.
+        @throws InstrumentTimeoutException if the device cannot be woken.
+        @throws InstrumentProtocolException if the update commands and not recognized.
+        """
+        # Command device to initialize parameters and send a config change event.
+        self._protocol_fsm.on_event(DriverEvent.INIT_PARAMS)
+
+        # Tell driver superclass to send a state change event.
+        # Superclass will query the state.
+        self._driver_event(DriverAsyncEvent.STATE_CHANGE)
+
+    def _handler_autosample_enter(self, *args, **kwargs):
+        """
+        Enter autosample state.
+        """
+        self._protocol_fsm.on_event(DriverEvent.INIT_PARAMS)
+
+        # Tell driver superclass to send a state change event.
+        # Superclass will query the state.
+        self._driver_event(DriverAsyncEvent.STATE_CHANGE)
+
+    def _handler_command_init_params(self, *args, **kwargs):
+        """
+        initialize parameters
+        """
+        next_state = None
+        result = None
+
+        self._init_params()
+        return (next_state, result)
+
+    def _handler_autosample_init_params(self, *args, **kwargs):
+        """
+        initialize parameters.  For this instrument we need to
+        put the instrument into command mode, apply the changes
+        then put it back.
+        """
+        next_state = None
+        result = None
+        error = None
+
+        try:
+            self._stop_logging()
+
+            self._init_params()
+
+        # Catch all error so we can put ourself back into
+        # streaming.  Then rethrow the error
+        except Exception as e:
+            error = e
+
+        finally:
+            # Switch back to streaming
+            if(not self._is_logging()):
+                log.debug("sbe start logging again")
+                self._start_logging()
+
+        if(error):
+            log.error("Error in apply_startup_params: %s", error)
+            raise error
+
+        return (next_state, result)
+
     def _handler_command_get(self, *args, **kwargs):
         """
         Get device parameters from the parameter dict.  First we set a baseline timestamp
@@ -332,6 +429,40 @@ class SeaBirdProtocol(CommandResponseInstrumentProtocol):
     ########################################################################
     # Private helpers.
     ########################################################################
+
+    def _discover(self, *args, **kwargs):
+        """
+        Discover current state; can be COMMAND or AUTOSAMPLE.
+        @retval (next_state, result)
+        @retval (next_state, result), (ProtocolState.COMMAND or
+        State.AUTOSAMPLE, None) if successful.
+        @throws InstrumentTimeoutException if the device cannot be woken.
+        @throws InstrumentStateException if the device response does not correspond to
+        an expected state.
+        """
+        timeout = kwargs.get('timeout', TIMEOUT)
+
+        log.debug("_handler_unknown_discover")
+        next_state = None
+        next_agent_state = None
+
+        logging = self._is_logging()
+        log.debug("are we logging? %s" % logging)
+
+        if(logging == None):
+            next_state = DriverProtocolState.UNKNOWN
+            next_agent_state = ResourceAgentState.ACTIVE_UNKNOWN
+
+        elif(logging):
+            next_state = DriverProtocolState.AUTOSAMPLE
+            next_agent_state = ResourceAgentState.STREAMING
+
+        else:
+            next_state = DriverProtocolState.COMMAND
+            next_agent_state = ResourceAgentState.COMMAND
+
+        log.debug("_handler_unknown_discover. result start: %s" % next_state)
+        return (next_state, next_agent_state)
 
     def _sync_clock(self, command, date_time_param, timeout=TIMEOUT, delay=1, time_format="%d %b %Y %H:%M:%S"):
         """
