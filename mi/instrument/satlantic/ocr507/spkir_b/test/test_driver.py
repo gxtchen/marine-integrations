@@ -137,7 +137,7 @@ class DriverTestMixinSub(DriverTestMixin):
     ###
     _driver_parameters = {
         # Parameters defined in the IOS
-        Parameter.MAX_RATE : {TYPE: float, READONLY: False, DA: True, STARTUP: True, DEFAULT: 0, VALUE: 0},
+        Parameter.MAX_RATE : {TYPE: float, READONLY: False, DA: True, STARTUP: True, DEFAULT: 0.0, VALUE: 0.0},
         Parameter.INIT_SILENT_MODE : {TYPE: bool, READONLY: True, DA: True, STARTUP: True},
         Parameter.INIT_AUTO_TELE : {TYPE: bool, READONLY: True, DA: True, STARTUP: False, DEFAULT: True, VALUE: True},
         }
@@ -186,6 +186,10 @@ class DriverTestMixinSub(DriverTestMixin):
         @param current_parameters: driver parameters read from the driver instance
         @param verify_values: should we verify values against definition?
         """
+        log.error("in assert_driver_parameters")
+        log.error(current_parameters)
+        log.error(self._driver_parameters)
+
         self.assert_parameters(current_parameters, self._driver_parameters, verify_values)
 
 
@@ -414,6 +418,59 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         reply = self.driver_client.cmd_dvr('get_resource', [config_key], timeout=20)
         self.assertEquals(reply, config_B)
 
+    def test_startup_params(self):
+        """
+        Verify that startup parameters are applied correctly. Generally this
+        happens in the driver discovery method.
+        """
+
+        # Explicitly verify these values after discover.  They should match
+        # what the startup values should be
+        get_values = {
+            Parameter.MAX_RATE: 0.0
+        }
+
+        # Change the values of these parameters to something before the
+        # driver is reinitalized.  They should be blown away on reinit.
+        new_values = {
+            Parameter.MAX_RATE: 0.0
+        }
+
+        self.assert_initialize_driver()
+        #self.assert_set_bulk(new_values)
+        self.assert_startup_parameters(self.assert_driver_parameters, new_values, get_values)
+
+        # Start autosample and try again
+        #self.assert_set_bulk(new_values)
+        #self.assert_driver_command(ProtocolEvent.START_AUTOSAMPLE, state=ProtocolState.AUTOSAMPLE, delay=1)
+        #self.assert_startup_parameters(self.assert_driver_parameters)
+        #self.assert_current_state(ProtocolState.AUTOSAMPLE)
+
+    def _start_stop_autosample(self):
+        """Wrap the steps and asserts for going into and out of auto sample.
+           May be used in multiple test cases.
+        """
+        self.driver_client.cmd_dvr('execute_resource', ProtocolEvent.START_AUTOSAMPLE)
+
+        self.check_state(ProtocolState.AUTOSAMPLE)
+        
+        # @todo check samples arriving here
+        # @todo check publishing samples from here
+        
+        self.driver_client.cmd_dvr('execute_resource', ProtocolEvent.STOP_AUTOSAMPLE)
+                
+        self.check_state(ProtocolState.COMMAND)
+
+    def test_start_stop_autosample(self):
+        """
+        Test moving into and out of autosample, gathering some data, and
+        seeing it published
+        @todo check the publishing, integrate this with changes in march 2012
+        """
+
+        self.put_instrument_in_command_mode()
+        self._start_stop_autosample()
+                
 
 ###############################################################################
 #                            QUALIFICATION TESTS                              #

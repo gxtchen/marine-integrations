@@ -293,7 +293,7 @@ class SpkirBConfigurationDataParticle(DataParticle):
         for (key, value) in single_var_matches.iteritems():
             result.append({DataParticleKey.VALUE_ID: key,
                            DataParticleKey.VALUE: value})
-            #log.debug("config particle: key is %s, value is %s" % (key, value))
+            log.debug("config particle: key is %s, value is %s" % (key, value))
 
         return result
     
@@ -717,7 +717,8 @@ class Protocol(CommandResponseInstrumentProtocol):
         # All parameters that can be set by the instrument.  Explicitly
         # excludes parameters from the instrument header.
         if (params == DriverParameter.ALL):
-            params = [Parameter.ALL]
+            #params = [Parameter.ALL]
+            params = [Parameter.MAX_RATE, Parameter.INIT_SILENT_MODE, Parameter.INIT_AUTO_TELE]
 
         log.debug(params)
         
@@ -787,7 +788,7 @@ class Protocol(CommandResponseInstrumentProtocol):
             # retries exhausted, so raise exception
             raise ex
 
-    def _handler_command_set(self, params, *args, **kwargs):
+    def _handler_command_set(self, *args, **kwargs):
         """Handle setting data from command mode
          
         @param params Dict of the parameters and values to pass to the state
@@ -796,36 +797,54 @@ class Protocol(CommandResponseInstrumentProtocol):
         """
         next_state = None
         result = None
-        result_vals = {}    
+        startup = False
+        # Retrieve required parameter.
+        # Raise if no parameter provided, or not a dict.
+        log.debug("_handler_command_set:")
+        try:
+            params = args[0]
+            log.debug(params)
+            
+        except IndexError:
+            raise InstrumentParameterException('_handler_command_set: Set command requires a parameter dict.')
 
-        if ((params == None) or (not isinstance(params, dict))):
-            raise InstrumentParameterException()
-        name_values = params
-        for key in name_values.keys():
-            if not Parameter.has(key):
-                raise InstrumentParameterException()
-            try:
-                str_val = self._param_dict.format(key, name_values[key])
-            except KeyError:
-                raise InstrumentParameterException()
-            result_vals[key] = self._do_cmd_resp(Command.SET, key, str_val,
+        if not isinstance(params, dict):
+            raise InstrumentParameterException('Set parameters not a dict.')
+
+        try:
+            startup = args[1]
+        except IndexError:
+            pass
+        
+        self._set_params(params, startup)
+
+        return (next_state, result)
+
+    def _set_params(self, *args, **kwargs):
+        """
+        Issue commands to the instrument to set various parameters
+        """
+        try:
+            params = args[0]
+        except IndexError:
+            raise InstrumentParameterException('_set_params: Set command requires a parameter dict.')
+        
+        result_vals = {}    
+        self._verify_not_readonly(*args, **kwargs)
+
+        for (key, val) in params.iteritems():
+            log.debug("KEY = %s VALUE = %s", key, val)
+            
+            result_vals[key] = self._do_cmd_resp(Command.SET, key, val,
                                                  expected_prompt=Prompt.COMMAND,
                                                  write_delay=self.write_delay)
-            # Populate with actual value instead of success flag
-            if result_vals[key]:
-                result_vals[key] = name_values[key]
                 
         self._update_params()
         log.debug("after update_params")
-        result = self._do_cmd_resp(Command.SAVE, None, None,
-                                   expected_prompt=Prompt.COMMAND,
-                                   write_delay=self.write_delay)
-        """@todo raise a parameter error if there was a bad value"""
-        result = result_vals
+#        result = self._do_cmd_resp(Command.SAVE, None, None,
+#                                   expected_prompt=Prompt.COMMAND,
+#                                   write_delay=self.write_delay)
             
-        log.debug("next: %s, result: %s", next_state, result) 
-        return (next_state, result)
-
     
     def _handler_command_acquire_status(self, *args, **kwargs):
         """
@@ -1141,11 +1160,15 @@ class Protocol(CommandResponseInstrumentProtocol):
             return InstErrorCode.HARDWARE_ERROR
         
         if(len(split_response) == 12):
-            show_all_response = response.replace(NEWLINE, "")
-
-            log.debug("IN _parse_show_response RESPONSE = " + repr(response))
-            return response
-
+            for param_line in split_response:
+                if 'Silent' in param_line or 'Telemetry' in param_line or 'Frame' in param_line:
+                    self._param_dict.update(param_line)
+            #return self._param_dict
+            config = {}
+            config[Parameter.MAX_RATE] = self._param_dict.get(Parameter.MAX_RATE)
+            config[Parameter.INIT_SILENT_MODE] = self._param_dict.get(Parameter.INIT_SILENT_MODE)  
+            log.debug(config) 
+            return config
         #for each_response in split_response:
         get_line = split_response[-3]
         log.debug("parsing get response " + get_line)
@@ -1279,6 +1302,10 @@ class Protocol(CommandResponseInstrumentProtocol):
         log.debug(new_config)      
         if (new_config != old_config):
             log.debug("new_config != old_config")
+            result = self._do_cmd_resp(Command.SAVE, None, None,
+                                   expected_prompt=Prompt.COMMAND,
+                                   write_delay=self.write_delay)
+            log.debug(result)
             self._driver_event(DriverAsyncEvent.CONFIG_CHANGE)            
         log.debug("end of _update_params")
 
