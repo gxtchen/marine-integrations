@@ -138,7 +138,7 @@ class DriverTestMixinSub(DriverTestMixin):
     _driver_parameters = {
         # Parameters defined in the IOS
         Parameter.MAX_RATE : {TYPE: float, READONLY: False, DA: True, STARTUP: True, DEFAULT: 0.0, VALUE: 0.0},
-        Parameter.INIT_SILENT_MODE : {TYPE: bool, READONLY: True, DA: True, STARTUP: True},
+        Parameter.INIT_SILENT_MODE : {TYPE: bool, READONLY: False, DA: True, STARTUP: True, DEFAULT: True, VALUE: True},
         Parameter.INIT_AUTO_TELE : {TYPE: bool, READONLY: True, DA: True, STARTUP: False, DEFAULT: True, VALUE: True},
         }
 
@@ -380,43 +380,37 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         # Test that the driver protocol is in state command.
         self.check_state(ProtocolState.COMMAND)
 
-    def test_get(self):
-        
-        self.put_instrument_in_command_mode()
+    def test_parameters(self):
+        """
+        Test driver parameters and verify their type.  Startup parameters also verify the parameter
+        value.  This test confirms that parameters are being read/converted properly and that
+        the startup has been applied.
+        """
+        self.assert_initialize_driver()
+        reply = self.driver_client.cmd_dvr('get_resource', Parameter.ALL)
+        self.assert_driver_parameters(reply, True)
 
-        params = {
-                   Parameter.MAX_RATE: 1.0,
-                   Parameter.INIT_SILENT_MODE: True,
-                   Parameter.INIT_AUTO_TELE: True,
+                 
+
+    def test_set(self):        
+        """
+        Test all set commands. Verify all exception cases.
+        """
+        self.assert_initialize_driver()
+        
+        # Verify we can set all parameters in bulk
+        new_values = {
+            Parameter.MAX_RATE: 12.0,
+            Parameter.INIT_SILENT_MODE: True
         }
+        self.assert_set_bulk(new_values)
 
-        reply = self.driver_client.cmd_dvr('get_resource',
-                                           params.keys(),
-                                           timeout=20)
+        self.assert_set(Parameter.MAX_RATE, 0.0)
+        self.assert_set(Parameter.MAX_RATE, 1.0)
+        self.assert_set(Parameter.MAX_RATE, 2.0)
+        self.assert_set_exception(Parameter.MAX_RATE, -1.0)
+        self.assert_set_exception(Parameter.MAX_RATE, 13.0)
         
-        self.assertEquals(reply, params)
-                 
-
-    def test_set(self):
-        config_key = Parameter.MAX_RATE
-        value_A = 12.0
-        value_B = 1.0
-        config_A = {config_key:value_A}
-        config_B = {config_key:value_B}
-        
-        self.put_instrument_in_command_mode()
-        
-        reply = self.driver_client.cmd_dvr('set_resource', config_A, timeout=20)
-        self.assertEquals(reply[config_key], value_A)
-                 
-        reply = self.driver_client.cmd_dvr('get_resource', [config_key], timeout=20)
-        self.assertEquals(reply, config_A)
-        
-        reply = self.driver_client.cmd_dvr('set_resource', config_B, timeout=20)
-        self.assertEquals(reply[config_key], value_B)
-         
-        reply = self.driver_client.cmd_dvr('get_resource', [config_key], timeout=20)
-        self.assertEquals(reply, config_B)
 
     def test_startup_params(self):
         """
@@ -427,24 +421,37 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         # Explicitly verify these values after discover.  They should match
         # what the startup values should be
         get_values = {
-            Parameter.MAX_RATE: 0.0
+            Parameter.MAX_RATE: 0.0,
+            Parameter.INIT_SILENT_MODE: True
         }
 
         # Change the values of these parameters to something before the
         # driver is reinitalized.  They should be blown away on reinit.
         new_values = {
-            Parameter.MAX_RATE: 0.0
+            Parameter.MAX_RATE: 0.0,
+            Parameter.INIT_SILENT_MODE: True
         }
 
         self.assert_initialize_driver()
-        #self.assert_set_bulk(new_values)
         self.assert_startup_parameters(self.assert_driver_parameters, new_values, get_values)
 
         # Start autosample and try again
-        #self.assert_set_bulk(new_values)
-        #self.assert_driver_command(ProtocolEvent.START_AUTOSAMPLE, state=ProtocolState.AUTOSAMPLE, delay=1)
-        #self.assert_startup_parameters(self.assert_driver_parameters)
-        #self.assert_current_state(ProtocolState.AUTOSAMPLE)
+        self.assert_set_bulk(new_values)
+        self.assert_driver_command(ProtocolEvent.START_AUTOSAMPLE, state=ProtocolState.AUTOSAMPLE, delay=1)
+        self.assert_current_state(ProtocolState.AUTOSAMPLE)
+
+    def test_commands(self):
+        """
+        Run instrument commands from both command and streaming mode.
+        """
+        self.assert_initialize_driver()
+
+        ####
+        # First test in command mode
+        ####
+        self.assert_driver_command(ProtocolEvent.DISPLAY_ID)
+        self.assert_driver_command(ProtocolEvent.START_AUTOSAMPLE, state=ProtocolState.AUTOSAMPLE, delay=1)
+        self.assert_driver_command(ProtocolEvent.STOP_AUTOSAMPLE, state=ProtocolState.COMMAND, delay=1)
 
     def _start_stop_autosample(self):
         """Wrap the steps and asserts for going into and out of auto sample.
@@ -471,6 +478,39 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         self.put_instrument_in_command_mode()
         self._start_stop_autosample()
                 
+    def test_autosample(self):
+        """
+        Verify that we can enter streaming and that all particles are produced
+        properly.
+
+        Because we have to test for three different data particles we can't use
+        the common assert_sample_autosample method
+        """
+        self.assert_initialize_driver()
+
+        self.assert_driver_command(ProtocolEvent.START_AUTOSAMPLE, state=ProtocolState.AUTOSAMPLE, delay=1)
+        self.assert_async_particle_generation(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time, timeout=60)
+
+        self.assert_driver_command(ProtocolEvent.STOP_AUTOSAMPLE, state=ProtocolState.COMMAND, delay=1)
+
+    def assert_cycle(self):
+        self.assert_current_state(ProtocolState.COMMAND)
+        self.assert_driver_command(ProtocolEvent.START_AUTOSAMPLE)
+        self.assert_current_state(ProtocolState.AUTOSAMPLE)
+
+        self.assert_async_particle_generation(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time, particle_count = 6, timeout=60)
+
+        self.assert_driver_command(ProtocolEvent.STOP_AUTOSAMPLE)
+        self.assert_current_state(ProtocolState.COMMAND)
+
+    def test_discover(self):
+        """
+        Verify we can discover from both command and auto sample modes
+        """
+        self.assert_initialize_driver()
+        self.assert_cycle()
+        self.assert_cycle()
+        
 
 ###############################################################################
 #                            QUALIFICATION TESTS                              #

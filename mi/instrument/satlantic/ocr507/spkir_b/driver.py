@@ -332,22 +332,22 @@ class SpkirBSampleDataParticle(DataParticle):
 
         # Initialize
         single_var_matches  = {
-            SpkirBSampleDataParticleKey.INSTRUMENT: None,
-            SpkirBSampleDataParticleKey.SN: None,
-            SpkirBSampleDataParticleKey.TIMER: None,
-            SpkirBSampleDataParticleKey.DELAY: None,
-            SpkirBSampleDataParticleKey.CHAN1: None,
+            SpkirBSampleDataParticleKey.INSTRUMENT: 'SATDI7',
+            SpkirBSampleDataParticleKey.SN: '0229',
+            SpkirBSampleDataParticleKey.TIMER: 0152801.56,
+            SpkirBSampleDataParticleKey.DELAY: -24610,
+            SpkirBSampleDataParticleKey.CHAN1: 3003176485,
             SpkirBSampleDataParticleKey.CHAN2: None,
             SpkirBSampleDataParticleKey.CHAN3: None,
             SpkirBSampleDataParticleKey.CHAN4: None,            
             SpkirBSampleDataParticleKey.CHAN5: None,
             SpkirBSampleDataParticleKey.CHAN6: None,
             SpkirBSampleDataParticleKey.CHAN7: None,
-            SpkirBSampleDataParticleKey.VIN: None,
-            SpkirBSampleDataParticleKey.VA: None,
-            SpkirBSampleDataParticleKey.TEMP: None,
-            SpkirBSampleDataParticleKey.FRMCOUNT: None,
-            SpkirBSampleDataParticleKey.CHKSUM: None,
+            SpkirBSampleDataParticleKey.VIN: 40924,
+            SpkirBSampleDataParticleKey.VA: 56375,
+            SpkirBSampleDataParticleKey.TEMP: 14296,
+            SpkirBSampleDataParticleKey.FRMCOUNT: 1,
+            SpkirBSampleDataParticleKey.CHKSUM: 192,
         }
         
         match = SAMPLE_PATTERN_MATCHER.match(self.raw_data)
@@ -429,7 +429,7 @@ class SpkirBSampleDataParticle(DataParticle):
         for (key, value) in single_var_matches.iteritems():
             result.append({DataParticleKey.VALUE_ID: key,
                            DataParticleKey.VALUE: value})
-            #log.debug("sample particle: key is %s, value is %s" % (key, value))
+            log.debug("sample particle: key is %s, value is %s" % (key, value))
 
        
         return result
@@ -456,6 +456,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         self.write_delay = WRITE_DELAY
         self._initsm = None
         self._initat = None
+        self._id_banner = None
         self.eoln = NEWLINE
         # Build protocol state machine.
         self._protocol_fsm = InstrumentFSM(ProtocolState, ProtocolEvent,
@@ -501,7 +502,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         # Add response handlers for device commands.
         self._add_response_handler(Command.GET, self._parse_get_response)
         self._add_response_handler(Command.SET, self._parse_set_response)
-        self._add_response_handler(Command.SHOW, self._parse_show_response)
+        self._add_response_handler(Command.DISPLAY_ID_BANNER, self._parse_display_id_response)
         self._add_response_handler(Command.SAMPLE, self._parse_cmd_prompt_response, ProtocolState.COMMAND)
         self._add_response_handler(Command.STOP_SAMPLING, self._parse_sample_response, ProtocolState.COMMAND)        # Add sample handlers.
         self._add_response_handler(Command.STOP_SAMPLING, self._parse_sample_response, ProtocolState.AUTOSAMPLE)        
@@ -552,7 +553,6 @@ class Protocol(CommandResponseInstrumentProtocol):
                              SpkirBConfigurationDataParticle.LINE3,
                              lambda match : False if (match.group(1)=='off') else True,
                              self._true_false_to_string,
-                             visibility = ParameterDictVisibility.READ_ONLY,
                              default_value=True,
                              display_name='Initialize silent mode (on|off)',
                              startup_param=True,
@@ -584,7 +584,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         @throw InstrumentProtocolException
         @todo handle errors correctly here, deal with repeats at high sample rate
         """
-        write_delay = 0.2
+        #write_delay = 0.2
         log.debug("Sending break char")
         # do the magic sequence of sending lots of characters really fast...
         # but not too fast
@@ -596,7 +596,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         while True:
             self._do_cmd_no_resp(Command.STOP_SAMPLING, timeout=timeout,
                                  expected_prompt=Prompt.COMMAND,
-                                 write_delay=write_delay)
+                                 write_delay=self.write_delay)
             if self._confirm_command_mode():
                 break  
 
@@ -702,7 +702,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         # Command device to update parameters and send a config change event.
         #self._update_params(Parameter.ALL, timeout=3)
 
-    def _handler_command_get(self, params=None, *args, **kwargs):
+    def _handler_command_get(self, *args, **kwargs):
         """Handle getting data from command mode
          
         @param params List of the parameters to pass to the state
@@ -716,30 +716,35 @@ class Protocol(CommandResponseInstrumentProtocol):
         log.debug("%%% IN _handler_command_get")
         # All parameters that can be set by the instrument.  Explicitly
         # excludes parameters from the instrument header.
-        if (params == DriverParameter.ALL):
-            #params = [Parameter.ALL]
-            params = [Parameter.MAX_RATE, Parameter.INIT_SILENT_MODE, Parameter.INIT_AUTO_TELE]
+        try:
+            params = args[0]
 
-        log.debug(params)
+        except IndexError:
+            raise InstrumentParameterException('Get command requires a parameter dict.')
+
+        if (params == DriverParameter.ALL or params == Parameter.ALL):
+            #params = [Parameter.ALL]
+            get_params = [Parameter.MAX_RATE, Parameter.INIT_SILENT_MODE, Parameter.INIT_AUTO_TELE]
+        else:
+            get_params = params
+
+        log.debug(get_params)
         
-        if ((params == None) or (not isinstance(params, list))):
+        if ((get_params == None) or (not isinstance(get_params, list))):
             log.debug("Params is None")
             raise InstrumentParameterException('Get command requires a parameter dict.')
                 
-        for param in params:
+        for param in get_params:
             log.debug("param is " + param)
             if not Parameter.has(param):
                 raise InstrumentParameterException()
 
-            if(param == Parameter.MAX_RATE or param == Parameter.ALL):
+            if(param == Parameter.MAX_RATE):
                 result_vals[param] = self._get_from_instrument(param)
             elif (self._initsm == None and self._initat == None):
-                log.debug("either initsm or initat is None")
                 result_vals[param] = self._get_from_instrument(param)
             else:
                 result_vals[param] = self._get_from_cache(param)
-                log.debug("_initsm is " + self._initsm)
-                log.debug("_initat is " + self._initat)
 
         result = result_vals
             
@@ -834,6 +839,8 @@ class Protocol(CommandResponseInstrumentProtocol):
 
         for (key, val) in params.iteritems():
             log.debug("KEY = %s VALUE = %s", key, val)
+            if isinstance(val, bool):
+                val = self._true_false_to_string(val)
             
             result_vals[key] = self._do_cmd_resp(Command.SET, key, val,
                                                  expected_prompt=Prompt.COMMAND,
@@ -845,23 +852,6 @@ class Protocol(CommandResponseInstrumentProtocol):
 #                                   expected_prompt=Prompt.COMMAND,
 #                                   write_delay=self.write_delay)
             
-    
-    def _handler_command_acquire_status(self, *args, **kwargs):
-        """
-        Get device status
-        """
-        next_state = None
-        next_agent_state = None
-        result = None
-        log.debug("_handler_command_acquire_status")
-
-        result = self._do_cmd_resp(Command.SHOW, timeout=TIMEOUT)
-
-        log.debug("SHOW Response: %s", result)
-
-        return (next_state, (next_agent_state, result))
-
-
     def _handler_command_exit(self, *args, **kwargs):
         """
         Exit command state.
@@ -920,11 +910,11 @@ class Protocol(CommandResponseInstrumentProtocol):
         next_agent_state = None
         result = None
 
-        # Issue the stop command.
-        self._do_cmd_resp(Command.DISPLAY_ID_BANNER, *args, **kwargs)
-
-        # Prompt device until command prompt is seen.
-        #self._wakeup_until(timeout, Prompt.COMMAND)
+        if (self._id_banner == None):
+            # Issue the stop command.
+            self._id_banner = self._do_cmd_resp(Command.DISPLAY_ID_BANNER, None, write_delay=self.write_delay)
+        
+        result = self._id_banner
 
         return (next_state, (next_agent_state, result))
         
@@ -1022,7 +1012,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         @throw InstrumentProtocolException
         @todo handle errors correctly here, deal with repeats at high sample rate
         """
-        write_delay = 0.2
+        #write_delay = 0.2
         log.debug("Sending break char")
         # do the magic sequence of sending lots of characters really fast...
         # but not too fast
@@ -1033,7 +1023,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         while True:
             self._do_cmd_no_resp(Command.STOP_SAMPLING, timeout=timeout,
                                  expected_prompt=Prompt.COMMAND,
-                                 write_delay=write_delay)
+                                 write_delay=self.write_delay)
             if self._confirm_command_mode():
                 break  
 
@@ -1158,17 +1148,6 @@ class Protocol(CommandResponseInstrumentProtocol):
         log.debug("response len is %d " % len(split_response))
         if (len(split_response) < 5) or (split_response[-1] != Prompt.COMMAND):
             return InstErrorCode.HARDWARE_ERROR
-        
-        if(len(split_response) == 12):
-            for param_line in split_response:
-                if 'Silent' in param_line or 'Telemetry' in param_line or 'Frame' in param_line:
-                    self._param_dict.update(param_line)
-            #return self._param_dict
-            config = {}
-            config[Parameter.MAX_RATE] = self._param_dict.get(Parameter.MAX_RATE)
-            config[Parameter.INIT_SILENT_MODE] = self._param_dict.get(Parameter.INIT_SILENT_MODE)  
-            log.debug(config) 
-            return config
         #for each_response in split_response:
         get_line = split_response[-3]
         log.debug("parsing get response " + get_line)
@@ -1187,7 +1166,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         return self._param_dict.get(name)
 #        return response
                
-    def _parse_show_response(self, response, prompt):
+    def _parse_display_id_response(self, response, prompt):
         """
         Parse handler for save command.
         @param response command response string.
@@ -1196,7 +1175,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         """
         response = response.replace(NEWLINE, "")
 
-        log.debug("IN _parse_show_response RESPONSE = " + repr(response))
+        log.debug("IN _parse_display_id_response RESPONSE = " + repr(response))
         return response
 
     def _parse_cmd_prompt_response(self, response, prompt):
@@ -1278,9 +1257,10 @@ class Protocol(CommandResponseInstrumentProtocol):
         if not isinstance(v,bool):
             raise InstrumentParameterException('Value %s is not a bool.' % str(v))
         if v:
-            return 'y'
+            log.debug("True to on")
+            return 'on'
         else:
-            return 'n'
+            return 'off'
 
     def _wakeup(self, timeout):
         """There is no wakeup sequence for this instrument"""
