@@ -19,6 +19,8 @@ import ntplib
 from mi.core.log import get_logger ; log = get_logger()
 
 from mi.core.common import BaseEnum
+from mi.core.common import InstErrorCode
+from mi.core.util import dict_equal
 from mi.core.instrument.instrument_protocol import CommandResponseInstrumentProtocol
 from mi.core.instrument.instrument_fsm import InstrumentFSM
 from mi.core.instrument.instrument_driver import SingleConnectionInstrumentDriver
@@ -46,7 +48,7 @@ from mi.core.exceptions import InstrumentDataException
 NEWLINE = '\r\n'
 # default timeout. 
 TIMEOUT = 10
-WRITE_DELAY = 0.2
+WRITE_DELAY = 0.4
 RESET_DELAY = 6
 RETRY = 3
 
@@ -62,9 +64,6 @@ CONFIGURATION_DATA_REGEX_MATCHER = re.compile(CONFIGURATION_DATA_REGEX)
 
 IDENTIFICATION_DATA_REGEX = r"Satlantic .*\sCopyright \(C\).*\sFirmware.*\sInstrument.*\sS\/N: \d{4}\s{2}"
 IDENTIFICATION_DATA_REGEX_MATCHER = re.compile(IDENTIFICATION_DATA_REGEX)
-
-HEADER_PATTERN = r'OCR-507 Command Console\r\nType \'help\' for a list of available commands\r\n'
-HEADER_REGEX = re.compile(HEADER_PATTERN)
 
 ###
 #    Driver Constant Definitions 
@@ -372,7 +371,9 @@ class SpkirBSampleDataParticle(DataParticle):
                    (binary_length - MIN_BINARY_CHAR) % 4 == 0):
                 num_channels = (binary_length - MIN_BINARY_CHAR) / 4 + 1
             else:
-                num_channels = 0
+                raise SampleException("ValueError while converting data: [%s]" %
+                                  self.raw_data)
+                #num_channels = 0
                    
             #log.debug("sample contains %d channels" % num_channels)       
             if (num_channels > 0):    
@@ -615,29 +616,6 @@ class Protocol(CommandResponseInstrumentProtocol):
         """
         return [x for x in events if Capability.has(x)]
 
-    def get_config(self, *args, **kwargs):
-        """ Get the entire configuration for the instrument
-        
-        @param params The parameters and values to set
-        @retval None if nothing was done, otherwise result of FSM event handle
-        Should be a dict of parameters and values
-        @throws InstrumentProtocolException On invalid parameter
-        """
-
-        config = self._protocol_fsm.on_event(ProtocolEvent.GET, [Parameter.MAX_RATE], **kwargs)
-        assert (isinstance(config, dict))
-        assert (config.has_key(Parameter.MAX_RATE))
-        
-        # Make sure we get these
-        # TODO: endless loops seem like really bad idea
-        log.debug("done with get_config")
-        log.debug(config[Parameter.MAX_RATE])
-  #      while config[Parameter.MAX_RATE] == InstErrorCode.HARDWARE_ERROR:
-  #          config[Parameter.MAX_RATE] = self._protocol_fsm.on_event(ProtocolEvent.GET, [Parameter.MAX_RATE])
-  
-        return config
-        
-
     ########################################################################
     # Unknown handlers.
     ########################################################################
@@ -699,8 +677,6 @@ class Protocol(CommandResponseInstrumentProtocol):
         # Tell driver superclass to send a state change event.
         # Superclass will query the state.
         self._driver_event(DriverAsyncEvent.STATE_CHANGE)
-        # Command device to update parameters and send a config change event.
-        #self._update_params(Parameter.ALL, timeout=3)
 
     def _handler_command_get(self, *args, **kwargs):
         """Handle getting data from command mode
@@ -741,8 +717,12 @@ class Protocol(CommandResponseInstrumentProtocol):
 
             if(param == Parameter.MAX_RATE):
                 result_vals[param] = self._get_from_instrument(param)
-            elif (self._initsm == None and self._initat == None):
-                result_vals[param] = self._get_from_instrument(param)
+            elif (param == Parameter.INIT_SILENT_MODE and self._initsm == None): 
+                self._initsm = self._get_from_instrument(param)
+                result_vals[param] = self._initsm
+            elif (param == Parameter.INIT_AUTO_TELE and self._initat == None):
+                self._initat = self._get_from_instrument(param)
+                result_vals[param] = self._initat
             else:
                 result_vals[param] = self._get_from_cache(param)
 
@@ -784,8 +764,8 @@ class Protocol(CommandResponseInstrumentProtocol):
             # retry up to RETRY times
             try:
                 val = self._do_cmd_resp(Command.GET, param,
-                    expected_prompt=Prompt.COMMAND,
-                    write_delay=self.write_delay)
+                        expected_prompt=Prompt.COMMAND,
+                        write_delay=self.write_delay)
                 return val
             except InstrumentProtocolException as ex:
                 pass   # GET failed, so retry again
@@ -834,23 +814,32 @@ class Protocol(CommandResponseInstrumentProtocol):
         except IndexError:
             raise InstrumentParameterException('_set_params: Set command requires a parameter dict.')
         
-        result_vals = {}    
+        result_vals = {} 
+        maxrate = None   
         self._verify_not_readonly(*args, **kwargs)
 
         for (key, val) in params.iteritems():
             log.debug("KEY = %s VALUE = %s", key, val)
             if isinstance(val, bool):
-                val = self._true_false_to_string(val)
+                val = self._true_false_to_string(val) 
+            if (key == Parameter.MAX_RATE):
+                maxrate = val
             
-            result_vals[key] = self._do_cmd_resp(Command.SET, key, val,
+            result = self._do_cmd_resp(Command.SET, key, val,
                                                  expected_prompt=Prompt.COMMAND,
                                                  write_delay=self.write_delay)
+            log.debug('do_comd_resp returns ' + repr(result))
                 
-        self._update_params()
+        retval = self._update_params(key, val)
+        if (maxrate != None):
+            if (maxrate == retval):
+                result = self._do_cmd_resp(Command.SAVE, None, None,
+                                   expected_prompt=Prompt.COMMAND,
+                                   write_delay=self.write_delay)
+            else:
+                raise InstrumentParameterException('parameter out of range')                    
+        
         log.debug("after update_params")
-#        result = self._do_cmd_resp(Command.SAVE, None, None,
-#                                   expected_prompt=Prompt.COMMAND,
-#                                   write_delay=self.write_delay)
             
     def _handler_command_exit(self, *args, **kwargs):
         """
@@ -1128,11 +1117,13 @@ class Protocol(CommandResponseInstrumentProtocol):
         @param prompt The prompt that was returned from the device
         """
         if prompt == Prompt.COMMAND:
-            return True
+            log.debug('_parse_set_response: returning True')
+            return True            
         elif response == ProtocolError.INVALID_COMMAND:
             return InstErrorCode.SET_DEVICE_ERR
         else:
-            return InstErrorCode.HARDWARE_ERROR
+            log.debug('_parse_set_response: returning ' + InstErrorCode.INVALID_COMMAND)
+            return InstErrorCode.INVALID_COMMAND
         
     def _parse_get_response(self, response, prompt):
         """ Parse the response from the instrument for a couple of different
@@ -1147,7 +1138,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         split_response = response.split(self.eoln)
         log.debug("response len is %d " % len(split_response))
         if (len(split_response) < 5) or (split_response[-1] != Prompt.COMMAND):
-            return InstErrorCode.HARDWARE_ERROR
+            return InstErrorCode.INVALID_COMMAND
         #for each_response in split_response:
         get_line = split_response[-3]
         log.debug("parsing get response " + get_line)
@@ -1194,7 +1185,7 @@ class Protocol(CommandResponseInstrumentProtocol):
                 response = split_result[1]
             return InstErrorCode.OK
         else:
-            return InstErrorCode.HARDWARE_ERROR
+            return InstErrorCode.INVALID_COMMAND
         
     def _parse_silent_response(self, response, prompt):
         """Parse a silent response
@@ -1209,7 +1200,7 @@ class Protocol(CommandResponseInstrumentProtocol):
            ((prompt == Prompt.NULL) or (prompt == Prompt.COMMAND)):
             return InstErrorCode.OK
         else:
-            return InstErrorCode.HARDWARE_ERROR
+            return InstErrorCode.INVALID_COMMAND
         
     def _parse_sample_response(self, response, prompt):
         """Parse a silent response
@@ -1225,22 +1216,6 @@ class Protocol(CommandResponseInstrumentProtocol):
         else:
             return InstErrorCode.HARDWARE_ERROR
         
-
-    def _parse_header_response(self, response, prompt):
-        """ Parse what the header looks like to make sure if came up.
-        
-        @param response What was sent back from the command that was sent
-        @param prompt The prompt that was returned from the device
-        @retval return An InstErrorCode value
-        """
-        log.debug("Parsing header response of [%s] with prompt [%s]",
-                        response, prompt)
-        if HEADER_REGEX.search(response):
-            return InstErrorCode.OK        
-        else:
-            return InstErrorCode.HARDWARE_ERROR
-        
-
     ########################################################################
     # Static helpers to format set commands.
     ########################################################################
@@ -1269,25 +1244,29 @@ class Protocol(CommandResponseInstrumentProtocol):
     def _update_params(self, *args, **kwargs):
         """Fetch the parameters from the device, and update the param dict.
         
-        @param args Unused
+        @param args set key, val
         @param kwargs Takes timeout value
         @throws InstrumentProtocolException
         @throws InstrumentTimeoutException
         """
         log.debug("Updating parameter dict")
+        key = args[0]
         old_config = self._param_dict.get_config()
-        self.get_config()
-        log.debug(old_config)
-        new_config = self._param_dict.get_config()      
-        log.debug(new_config)      
-        if (new_config != old_config):
-            log.debug("new_config != old_config")
-            result = self._do_cmd_resp(Command.SAVE, None, None,
-                                   expected_prompt=Prompt.COMMAND,
-                                   write_delay=self.write_delay)
-            log.debug(result)
-            self._driver_event(DriverAsyncEvent.CONFIG_CHANGE)            
-        log.debug("end of _update_params")
+        log.debug("Run configure command: %s" % Command.GET)
+        response = self._do_cmd_resp(Command.GET, Parameter.MAX_RATE, write_delay=self.write_delay, timeout=TIMEOUT)
+        #for line in response.split(NEWLINE):
+        #    self._param_dict.update(line)
+        log.debug("configure command response: %s" % response)
+
+        # Get new param dict config. If it differs from the old config,
+        # tell driver superclass to publish a config change event.
+        new_config = self._param_dict.get_config()
+        log.debug("new_config: %s == old_config: %s" % (new_config, old_config))
+        if not dict_equal(old_config, new_config):
+            log.debug("configuration has changed.  Send driver event")
+            self._driver_event(DriverAsyncEvent.CONFIG_CHANGE)
+            
+        return response
 
     @staticmethod
     def _int_to_string(v):

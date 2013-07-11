@@ -387,6 +387,7 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         the startup has been applied.
         """
         self.assert_initialize_driver()
+        self.assert_set(Parameter.MAX_RATE, 0.0)
         reply = self.driver_client.cmd_dvr('get_resource', Parameter.ALL)
         self.assert_driver_parameters(reply, True)
 
@@ -452,7 +453,7 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         self.assert_driver_command(ProtocolEvent.DISPLAY_ID)
         self.assert_driver_command(ProtocolEvent.START_AUTOSAMPLE, state=ProtocolState.AUTOSAMPLE, delay=1)
         self.assert_driver_command(ProtocolEvent.STOP_AUTOSAMPLE, state=ProtocolState.COMMAND, delay=1)
-
+ 
     def _start_stop_autosample(self):
         """Wrap the steps and asserts for going into and out of auto sample.
            May be used in multiple test cases.
@@ -489,7 +490,7 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         self.assert_initialize_driver()
 
         self.assert_driver_command(ProtocolEvent.START_AUTOSAMPLE, state=ProtocolState.AUTOSAMPLE, delay=1)
-        self.assert_async_particle_generation(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time, timeout=60)
+        self.assert_async_particle_generation(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time, timeout=600)
 
         self.assert_driver_command(ProtocolEvent.STOP_AUTOSAMPLE, state=ProtocolState.COMMAND, delay=1)
 
