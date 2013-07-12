@@ -47,7 +47,7 @@ from mi.core.exceptions import InstrumentDataException
 # newline.
 NEWLINE = '\r\n'
 # default timeout. 
-TIMEOUT = 10
+TIMEOUT = 30
 WRITE_DELAY = 0.4
 RESET_DELAY = 6
 RETRY = 3
@@ -578,7 +578,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         """
         self._cmd_dict.add(Capability.DISPLAY_ID, display_name="show banner")
 
-    def _send_break(self, timeout=10):
+    def _send_break(self, timeout=TIMEOUT):
         """Send a blind break command to the device, confirm command mode after
         
         @throw InstrumentTimeoutException
@@ -646,7 +646,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         next_state = None
         result = None
 
-        self._do_cmd_no_resp(Command.EXIT_AND_RESET, None, write_delay=self.write_delay)
+        self._do_cmd_no_resp(Command.EXIT_AND_RESET, None, write_delay=self.write_delay, timeout=TIMEOUT)
         time.sleep(RESET_DELAY)
 
         # Break to command mode, then set next state to command mode
@@ -759,13 +759,13 @@ class Protocol(CommandResponseInstrumentProtocol):
         @raise: InstrumentProtocolException when fail to get a response from the instrument
         '''
 
+        val = InstErrorCode.INVALID_COMMAND
         log.debug("%%% IN _get_from_instrument")
         for attempt in range(RETRY):
             # retry up to RETRY times
             try:
-                val = self._do_cmd_resp(Command.GET, param,
-                        expected_prompt=Prompt.COMMAND,
-                        write_delay=self.write_delay)
+                while (val == InstErrorCode.INVALID_COMMAND):
+                    val = self._do_cmd_resp(Command.GET, param, timeout=TIMEOUT, write_delay=self.write_delay)
                 return val
             except InstrumentProtocolException as ex:
                 pass   # GET failed, so retry again
@@ -815,6 +815,7 @@ class Protocol(CommandResponseInstrumentProtocol):
             raise InstrumentParameterException('_set_params: Set command requires a parameter dict.')
         
         result_vals = {} 
+        result = InstErrorCode.INVALID_COMMAND
         maxrate = None   
         self._verify_not_readonly(*args, **kwargs)
 
@@ -824,10 +825,7 @@ class Protocol(CommandResponseInstrumentProtocol):
                 val = self._true_false_to_string(val) 
             if (key == Parameter.MAX_RATE):
                 maxrate = val
-            
-            result = self._do_cmd_resp(Command.SET, key, val,
-                                                 expected_prompt=Prompt.COMMAND,
-                                                 write_delay=self.write_delay)
+            result = self._do_cmd_resp(Command.SET, key, val, timeout=TIMEOUT, write_delay=self.write_delay)
             log.debug('do_comd_resp returns ' + repr(result))
                 
         retval = self._update_params(key, val)
@@ -835,6 +833,7 @@ class Protocol(CommandResponseInstrumentProtocol):
             if (maxrate == retval):
                 result = self._do_cmd_resp(Command.SAVE, None, None,
                                    expected_prompt=Prompt.COMMAND,
+                                   timeout=TIMEOUT,
                                    write_delay=self.write_delay)
             else:
                 raise InstrumentParameterException('parameter out of range')                    
@@ -901,7 +900,7 @@ class Protocol(CommandResponseInstrumentProtocol):
 
         if (self._id_banner == None):
             # Issue the stop command.
-            self._id_banner = self._do_cmd_resp(Command.DISPLAY_ID_BANNER, None, write_delay=self.write_delay)
+            self._id_banner = self._do_cmd_resp(Command.DISPLAY_ID_BANNER, None, timeout=TIMEOUT, write_delay=self.write_delay)
         
         result = self._id_banner
 
@@ -920,7 +919,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         
         log.debug("starting autosample")
         # Assure the device is transmitting.
-        self._do_cmd_no_resp(Command.EXIT, None, write_delay=self.write_delay)
+        self._do_cmd_no_resp(Command.EXIT, None, write_delay=self.write_delay, timeout=TIMEOUT)
         self._driver_event(DriverAsyncEvent.STATE_CHANGE)
         next_state = ProtocolState.AUTOSAMPLE
         next_agent_state = ResourceAgentState.STREAMING
@@ -994,7 +993,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         log.debug("%%% IN _send_wakeup")
         self._connection.send(NEWLINE)
 
-    def _send_break(self, timeout=10):
+    def _send_break(self, timeout=TIMEOUT):
         """Send a blind break command to the device, confirm command mode after
         
         @throw InstrumentTimeoutException
@@ -1026,9 +1025,9 @@ class Protocol(CommandResponseInstrumentProtocol):
         try:
             # suspend our belief that we are in another state, and behave
             # as if we are in command mode long enough to confirm or deny it
-            self._do_cmd_no_resp(Command.SAMPLE, timeout=2,
+            self._do_cmd_no_resp(Command.SAMPLE, timeout=TIMEOUT,
                                  expected_prompt=Prompt.COMMAND)
-            (prompt, result) = self._get_response(timeout=2,
+            (prompt, result) = self._get_response(timeout=TIMEOUT,
                                                   expected_prompt=Prompt.COMMAND)
         except InstrumentTimeoutException:
             # If we timed out, its because we never got our $ prompt and must
@@ -1116,9 +1115,13 @@ class Protocol(CommandResponseInstrumentProtocol):
         @param response What was sent back from the command that was sent
         @param prompt The prompt that was returned from the device
         """
+        split_response = response.split(self.eoln)
+        log.debug("_parse_set_response: response len is %d " % len(split_response))
+        if (len(split_response) == 5) and ('Usage' in split_response[-3]):
+            return InstErrorCode.INVALID_COMMAND
+
         if prompt == Prompt.COMMAND:
-            log.debug('_parse_set_response: returning True')
-            return True            
+            return InstErrorCode.OK            
         elif response == ProtocolError.INVALID_COMMAND:
             return InstErrorCode.SET_DEVICE_ERR
         else:
@@ -1142,6 +1145,10 @@ class Protocol(CommandResponseInstrumentProtocol):
         #for each_response in split_response:
         get_line = split_response[-3]
         log.debug("parsing get response " + get_line)
+        
+        if 'Usage' in get_line or 'unknown command' in get_line:
+            return InstErrorCode.INVALID_COMMAND
+        
         self._param_dict.update(get_line)
         #self._param_dict.update(split_response[-3])
         name = None
@@ -1244,16 +1251,18 @@ class Protocol(CommandResponseInstrumentProtocol):
     def _update_params(self, *args, **kwargs):
         """Fetch the parameters from the device, and update the param dict.
         
-        @param args set key, val
+        @param args not used
         @param kwargs Takes timeout value
         @throws InstrumentProtocolException
         @throws InstrumentTimeoutException
         """
         log.debug("Updating parameter dict")
-        key = args[0]
+        response = InstErrorCode.INVALID_COMMAND
+
         old_config = self._param_dict.get_config()
         log.debug("Run configure command: %s" % Command.GET)
-        response = self._do_cmd_resp(Command.GET, Parameter.MAX_RATE, write_delay=self.write_delay, timeout=TIMEOUT)
+        while (response == InstErrorCode.INVALID_COMMAND):
+            response = self._do_cmd_resp(Command.GET, Parameter.MAX_RATE, write_delay=self.write_delay, timeout=TIMEOUT)
         #for line in response.split(NEWLINE):
         #    self._param_dict.update(line)
         log.debug("configure command response: %s" % response)

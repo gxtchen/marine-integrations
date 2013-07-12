@@ -411,7 +411,7 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         self.assert_set(Parameter.MAX_RATE, 2.0)
         self.assert_set_exception(Parameter.MAX_RATE, -1.0)
         self.assert_set_exception(Parameter.MAX_RATE, 13.0)
-        
+        self.assert_set_exception(Parameter.MAX_RATE, 'bad')
 
     def test_startup_params(self):
         """
