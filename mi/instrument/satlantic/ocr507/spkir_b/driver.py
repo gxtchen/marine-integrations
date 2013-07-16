@@ -367,8 +367,9 @@ class SpkirBSampleDataParticle(DataParticle):
             
             if (binary_length == MIN_BINARY_CHAR):
                 num_channels = 1 
-            elif (binary_length > MIN_BINARY_CHAR and \
-                   (binary_length - MIN_BINARY_CHAR) % 4 == 0):
+            elif (binary_length > MIN_BINARY_CHAR):
+                # and \
+                #   (binary_length - MIN_BINARY_CHAR) % 4 == 0):
                 num_channels = (binary_length - MIN_BINARY_CHAR) / 4 + 1
             else:
                 raise SampleException("ValueError while converting data: [%s]" %
@@ -930,10 +931,12 @@ class Protocol(CommandResponseInstrumentProtocol):
         """
         Start direct access
         """
+        next_state = None
+        result = None
+
         next_state = ProtocolState.DIRECT_ACCESS
         next_agent_state = ResourceAgentState.DIRECT_ACCESS
-        result = None
-        log.debug("_handler_command_start_direct: entering DA mode")
+
         return (next_state, (next_agent_state, result))
 
     ########################################################################

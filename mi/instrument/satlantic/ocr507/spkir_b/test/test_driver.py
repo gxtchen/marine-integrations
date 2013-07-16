@@ -163,13 +163,13 @@ class DriverTestMixinSub(DriverTestMixin):
         SpkirBSampleDataParticleKey.SN: {TYPE: unicode, VALUE: '0229', REQUIRED: True },
         SpkirBSampleDataParticleKey.TIMER: {TYPE: float, VALUE: 0152801.56, REQUIRED: True },
         SpkirBSampleDataParticleKey.DELAY: {TYPE: int, VALUE: -24610, REQUIRED: True },  
-        SpkirBSampleDataParticleKey.CHAN1: {TYPE: int, VALUE: 3003176485, REQUIRED: True },
-        SpkirBSampleDataParticleKey.CHAN2: {TYPE: int, VALUE: 0, REQUIRED: False },
-        SpkirBSampleDataParticleKey.CHAN3: {TYPE: int, VALUE: 0, REQUIRED: False },
-        SpkirBSampleDataParticleKey.CHAN4: {TYPE: int, VALUE: 0, REQUIRED: False },
-        SpkirBSampleDataParticleKey.CHAN5: {TYPE: int, VALUE: 0, REQUIRED: False },
-        SpkirBSampleDataParticleKey.CHAN6: {TYPE: int, VALUE: 0, REQUIRED: False },
-        SpkirBSampleDataParticleKey.CHAN7: {TYPE: int, VALUE: 0, REQUIRED: False },
+        SpkirBSampleDataParticleKey.CHAN1: {TYPE: long, VALUE: 3003176485, REQUIRED: True },
+        SpkirBSampleDataParticleKey.CHAN2: {TYPE: long, VALUE: 0, REQUIRED: False },
+        SpkirBSampleDataParticleKey.CHAN3: {TYPE: long, VALUE: 0, REQUIRED: False },
+        SpkirBSampleDataParticleKey.CHAN4: {TYPE: long, VALUE: 0, REQUIRED: False },
+        SpkirBSampleDataParticleKey.CHAN5: {TYPE: long, VALUE: 0, REQUIRED: False },
+        SpkirBSampleDataParticleKey.CHAN6: {TYPE: long, VALUE: 0, REQUIRED: False },
+        SpkirBSampleDataParticleKey.CHAN7: {TYPE: long, VALUE: 0, REQUIRED: False },
         SpkirBSampleDataParticleKey.VIN: {TYPE: int, VALUE: 40924, REQUIRED: True },
         SpkirBSampleDataParticleKey.VA: {TYPE: int, VALUE: 56375, REQUIRED: True },
         SpkirBSampleDataParticleKey.TEMP: {TYPE: int, VALUE: 14296, REQUIRED: True },
@@ -520,35 +520,45 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
 # be tackled after all unit and integration tests are complete                #
 ###############################################################################
 @attr('QUAL', group='mi')
-class DriverQualificationTest(InstrumentDriverQualificationTestCase):
+class DriverQualificationTest(InstrumentDriverQualificationTestCase, DriverTestMixinSub):
     def setUp(self):
         InstrumentDriverQualificationTestCase.setUp(self)
 
-    def test_direct_access_telnet_mode(self):
+    def assert_cycle(self):
+        self.assert_start_autosample()
+
+        self.assert_particle_async(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time)
+
+        self.assert_stop_autosample()
+
+    def test_cycle(self):
         """
-        @brief This test manually tests that the Instrument Driver properly supports direct access to the physical instrument. (telnet mode)
+        Verify we can bounce between command and streaming.  We try it a few times to see if we can find a timeout.
         """
-        self.assert_direct_access_start_telnet()
-        self.assertTrue(self.tcp_client)
+        self.assert_enter_command_mode()
 
-        ###
-        #   Add instrument specific code here.
-        ###
-
-        self.assert_direct_access_stop_telnet()
-
-
-    def test_poll(self):
-        '''
-        No polling for a single sample
-        '''
-
+        self.assert_cycle()
+        self.assert_cycle()
+        self.assert_cycle()
+        self.assert_cycle()
 
     def test_autosample(self):
-        '''
-        start and stop autosample and verify data particle
-        '''
+        """
+        Verify autosample works and data particles are created
+        """
+        #InstrumentDriverQualificationTestCase.setUp(self)
+        #
+        self.assert_enter_command_mode()
+        self.assert_set_parameter(Parameter.MAX_RATE, 0.0)
 
+        self.assert_start_autosample()
+        self.assert_particle_async(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time)
+
+        # Stop autosample and do run a couple commands.
+        self.assert_stop_autosample()
+        
+        # Restart autosample and gather a couple samples
+        self.assert_sample_autosample(self.assert_particle_real_time, DataParticleType.PREST_REAL_TIME)
 
     def test_get_set_parameters(self):
         '''
@@ -556,7 +566,20 @@ class DriverQualificationTest(InstrumentDriverQualificationTestCase):
         ensuring that read only parameters fail on set.
         '''
         self.assert_enter_command_mode()
+        self.assert_get_parameter(Parameter.MAX_RATE, 0.0)
+        self.assert_set_parameter(Parameter.MAX_RATE, 1.0)
+        self.assert_get_parameter(Parameter.MAX_RATE, 1.0)
+        self.assert_set_parameter(Parameter.MAX_RATE, 10.0)
+        self.assert_get_parameter(Parameter.MAX_RATE, 10.0)
+        self.assert_set_parameter(Parameter.MAX_RATE, 0.0)
+        self.assert_get_parameter(Parameter.MAX_RATE, 0.0)
 
+        # Change these values anyway just in case it ran first.
+        self.assert_start_autosample()
+        self.assert_particle_async(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time)
+
+        # Stop autosample and do run a couple commands.
+        self.assert_stop_autosample()
 
     def test_get_capabilities(self):
         """
@@ -564,3 +587,19 @@ class DriverQualificationTest(InstrumentDriverQualificationTestCase):
         returned by get_current_capabilities
         """
         self.assert_enter_command_mode()
+
+        ##################
+        #  Command Mode
+        ##################
+        capabilities = {
+            AgentCapabilityType.AGENT_COMMAND: self._common_agent_commands(ResourceAgentState.COMMAND),
+            AgentCapabilityType.AGENT_PARAMETER: self._common_agent_parameters(),
+            AgentCapabilityType.RESOURCE_COMMAND: [
+                ProtocolEvent.DISPLAY_ID,
+               ],
+            AgentCapabilityType.RESOURCE_INTERFACE: None,
+            AgentCapabilityType.RESOURCE_PARAMETER: self._driver_parameters.keys()
+        }
+
+        self.assert_capabilities(capabilities)
+
