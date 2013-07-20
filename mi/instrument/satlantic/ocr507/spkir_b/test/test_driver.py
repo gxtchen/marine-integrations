@@ -145,6 +145,8 @@ class DriverTestMixinSub(DriverTestMixin):
     _driver_capabilities = {
         # capabilities defined in the IOS
         Capability.DISPLAY_ID : {STATES: [ProtocolState.COMMAND]},
+        Capability.START_AUTOSAMPLE : {STATES: [ProtocolState.COMMAND]},
+        Capability.STOP_AUTOSAMPLE : {STATES: [ProtocolState.AUTOSAMPLE]},
     }
 
     _prest_device_config_parameters = {
@@ -378,6 +380,12 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         self.driver_client.cmd_dvr('discover_state')
 
         # Test that the driver protocol is in state command.
+        state = self.driver_client.cmd_dvr('get_resource_state')
+        
+        # If instrument is in autosample state, stop it 
+        if (state == ProtocolState.AUTOSAMPLE):
+            self.driver_client.cmd_dvr('execute_resource', ProtocolEvent.STOP_AUTOSAMPLE)
+
         self.check_state(ProtocolState.COMMAND)
 
     def test_parameters(self):
@@ -409,6 +417,7 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         self.assert_set(Parameter.MAX_RATE, 0.0)
         self.assert_set(Parameter.MAX_RATE, 1.0)
         self.assert_set(Parameter.MAX_RATE, 2.0)
+        self.assert_set(Parameter.MAX_RATE, 0.0)
         self.assert_set_exception(Parameter.MAX_RATE, -1.0)
         self.assert_set_exception(Parameter.MAX_RATE, 13.0)
         self.assert_set_exception(Parameter.MAX_RATE, 'bad')
@@ -521,44 +530,8 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
 ###############################################################################
 @attr('QUAL', group='mi')
 class DriverQualificationTest(InstrumentDriverQualificationTestCase, DriverTestMixinSub):
-    def setUp(self):
-        InstrumentDriverQualificationTestCase.setUp(self)
-
-    def assert_cycle(self):
-        self.assert_start_autosample()
-
-        self.assert_particle_async(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time)
-
-        self.assert_stop_autosample()
-
-    def test_cycle(self):
-        """
-        Verify we can bounce between command and streaming.  We try it a few times to see if we can find a timeout.
-        """
-        self.assert_enter_command_mode()
-
-        self.assert_cycle()
-        self.assert_cycle()
-        self.assert_cycle()
-        self.assert_cycle()
-
-    def test_autosample(self):
-        """
-        Verify autosample works and data particles are created
-        """
-        #InstrumentDriverQualificationTestCase.setUp(self)
-        #
-        self.assert_enter_command_mode()
-        self.assert_set_parameter(Parameter.MAX_RATE, 0.0)
-
-        self.assert_start_autosample()
-        self.assert_particle_async(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time)
-
-        # Stop autosample and do run a couple commands.
-        self.assert_stop_autosample()
-        
-        # Restart autosample and gather a couple samples
-        self.assert_sample_autosample(self.assert_particle_real_time, DataParticleType.PREST_REAL_TIME)
+#    def setUp(self):
+#        InstrumentDriverQualificationTestCase.setUp(self)
 
     def test_get_set_parameters(self):
         '''
@@ -566,6 +539,7 @@ class DriverQualificationTest(InstrumentDriverQualificationTestCase, DriverTestM
         ensuring that read only parameters fail on set.
         '''
         self.assert_enter_command_mode()
+        self.assert_set_parameter(Parameter.MAX_RATE, 0.0)
         self.assert_get_parameter(Parameter.MAX_RATE, 0.0)
         self.assert_set_parameter(Parameter.MAX_RATE, 1.0)
         self.assert_get_parameter(Parameter.MAX_RATE, 1.0)
@@ -596,10 +570,57 @@ class DriverQualificationTest(InstrumentDriverQualificationTestCase, DriverTestM
             AgentCapabilityType.AGENT_PARAMETER: self._common_agent_parameters(),
             AgentCapabilityType.RESOURCE_COMMAND: [
                 ProtocolEvent.DISPLAY_ID,
+                ProtocolEvent.START_AUTOSAMPLE,
                ],
             AgentCapabilityType.RESOURCE_INTERFACE: None,
             AgentCapabilityType.RESOURCE_PARAMETER: self._driver_parameters.keys()
         }
 
         self.assert_capabilities(capabilities)
+        ##################
+        #  Streaming Mode
+        ##################
 
+        capabilities[AgentCapabilityType.AGENT_COMMAND] = self._common_agent_commands(ResourceAgentState.STREAMING)
+        capabilities[AgentCapabilityType.RESOURCE_COMMAND] =  [
+            ProtocolEvent.STOP_AUTOSAMPLE,
+            ]
+
+        self.assert_start_autosample()
+        self.assert_capabilities(capabilities)
+        self.assert_stop_autosample()
+    
+    def assert_cycle(self):
+        self.assert_start_autosample()
+
+        self.assert_particle_async(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time)
+
+        self.assert_stop_autosample()
+
+    def test_cycle(self):
+        #
+        #Verify we can bounce between command and streaming.  We try it a few times to see if we can find a timeout.
+        #
+        self.assert_enter_command_mode()
+
+        self.assert_cycle()
+        self.assert_cycle()
+        self.assert_cycle()
+        self.assert_cycle()
+
+    def test_autosample(self):
+        #
+        #Verify autosample works and data particles are created
+        #
+
+        self.assert_enter_command_mode()
+        self.assert_set_parameter(Parameter.MAX_RATE, 0.0)
+
+        self.assert_start_autosample()
+        self.assert_particle_async(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time)
+
+        # Stop autosample and do run a couple commands.
+        self.assert_stop_autosample()
+        
+        # Restart autosample and gather a couple samples
+        self.assert_sample_autosample(self.assert_particle_real_time, DataParticleType.PREST_REAL_TIME)

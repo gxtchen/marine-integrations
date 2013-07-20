@@ -47,7 +47,7 @@ from mi.core.exceptions import InstrumentDataException
 # newline.
 NEWLINE = '\r\n'
 # default timeout. 
-TIMEOUT = 30
+TIMEOUT = 45
 WRITE_DELAY = 0.4
 RESET_DELAY = 6
 RETRY = 3
@@ -95,6 +95,7 @@ class ProtocolEvent(BaseEnum):
     EXIT = DriverEvent.EXIT
     GET = DriverEvent.GET
     SET = DriverEvent.SET
+    INIT_PARAMS = DriverEvent.INIT_PARAMS
     DISCOVER = DriverEvent.DISCOVER
     START_AUTOSAMPLE = DriverEvent.START_AUTOSAMPLE
     STOP_AUTOSAMPLE = DriverEvent.STOP_AUTOSAMPLE
@@ -108,6 +109,8 @@ class Capability(BaseEnum):
     Protocol events that should be exposed to users (subset of above).
     """
     DISPLAY_ID = ProtocolEvent.DISPLAY_ID
+    START_AUTOSAMPLE = ProtocolEvent.START_AUTOSAMPLE
+    STOP_AUTOSAMPLE = ProtocolEvent.STOP_AUTOSAMPLE
 
 class Parameter(DriverParameter):
     """
@@ -116,7 +119,7 @@ class Parameter(DriverParameter):
     MAX_RATE = 'maxrate'            # maximum frame rate (Hz)
     INIT_SILENT_MODE = 'initsm'     # initial silent mode (on|off)
     INIT_AUTO_TELE = 'initat'       # initial auto telemetry (on|off)
-    ALL = 'all'
+    #ALL = 'all'
 
 class Prompt(BaseEnum):
     """
@@ -360,7 +363,7 @@ class SpkirBSampleDataParticle(DataParticle):
             single_var_matches[SpkirBSampleDataParticleKey.SN] = match.group(2)
             single_var_matches[SpkirBSampleDataParticleKey.TIMER]  = float(match.group(3))
             binary_str = match.group(4)
-            log.debug(binary_str)
+            #log.debug(binary_str)
             
             binary_length = len(binary_str)
             #log.debug("binary_str has %d chars" % binary_length)
@@ -431,7 +434,7 @@ class SpkirBSampleDataParticle(DataParticle):
         for (key, value) in single_var_matches.iteritems():
             result.append({DataParticleKey.VALUE_ID: key,
                            DataParticleKey.VALUE: value})
-            log.debug("sample particle: key is %s, value is %s" % (key, value))
+#            log.debug("sample particle: key is %s, value is %s" % (key, value))
 
        
         return result
@@ -476,10 +479,12 @@ class Protocol(CommandResponseInstrumentProtocol):
         self._protocol_fsm.add_handler(ProtocolState.COMMAND, ProtocolEvent.SET, self._handler_command_set)
         self._protocol_fsm.add_handler(ProtocolState.COMMAND, ProtocolEvent.DISPLAY_ID, self._handler_command_display_id)
         self._protocol_fsm.add_handler(ProtocolState.COMMAND, ProtocolEvent.START_AUTOSAMPLE, self._handler_command_start_autosample)
+        self._protocol_fsm.add_handler(ProtocolState.COMMAND, ProtocolEvent.INIT_PARAMS, self._handler_command_init_params)
 
         self._protocol_fsm.add_handler(ProtocolState.AUTOSAMPLE, ProtocolEvent.ENTER, self._handler_autosample_enter)
         self._protocol_fsm.add_handler(ProtocolState.AUTOSAMPLE, ProtocolEvent.EXIT, self._handler_autosample_exit)
         self._protocol_fsm.add_handler(ProtocolState.AUTOSAMPLE, ProtocolEvent.STOP_AUTOSAMPLE, self._handler_autosample_stop_autosample)
+        self._protocol_fsm.add_handler(ProtocolState.AUTOSAMPLE, ProtocolEvent.INIT_PARAMS, self._handler_autosample_init_params)
 
         self._protocol_fsm.add_handler(ProtocolState.DIRECT_ACCESS, ProtocolEvent.ENTER, self._handler_direct_access_enter)
         self._protocol_fsm.add_handler(ProtocolState.DIRECT_ACCESS, ProtocolEvent.EXIT, self._handler_direct_access_exit)
@@ -578,6 +583,8 @@ class Protocol(CommandResponseInstrumentProtocol):
         Populate the command dictionary with command.
         """
         self._cmd_dict.add(Capability.DISPLAY_ID, display_name="show banner")
+        self._cmd_dict.add(Capability.START_AUTOSAMPLE, display_name="start autosample")
+        self._cmd_dict.add(Capability.STOP_AUTOSAMPLE, display_name="stop autosample")
 
     def _send_break(self, timeout=TIMEOUT):
         """Send a blind break command to the device, confirm command mode after
@@ -644,24 +651,13 @@ class Protocol(CommandResponseInstrumentProtocol):
         @throws InstrumentStateException if the device response does not correspond to
         an expected state.
         """
-        next_state = None
-        result = None
+        (protocol_state, agent_state) =  self._discover()
 
-        self._do_cmd_no_resp(Command.EXIT_AND_RESET, None, write_delay=self.write_delay, timeout=TIMEOUT)
-        time.sleep(RESET_DELAY)
-
-        # Break to command mode, then set next state to command mode
-        # If we are doing this, we must be connected
-        self._send_break()
-
-        self._driver_event(DriverAsyncEvent.STATE_CHANGE)
-        next_state = ProtocolState.COMMAND            
-        result = ResourceAgentState.IDLE
+        if(protocol_state == ProtocolState.COMMAND):
+            agent_state = ResourceAgentState.IDLE
 
         log.debug("_handler_unknown_discover complete")
-
-        return (next_state, result)
-
+        return (protocol_state, agent_state)
 
     ########################################################################
     # Command handlers.
@@ -675,6 +671,8 @@ class Protocol(CommandResponseInstrumentProtocol):
         """
         log.debug("%%% IN _handler_command_enter")
 
+        # Command device to initialize parameters and send a config change event.
+        self._protocol_fsm.on_event(ProtocolEvent.INIT_PARAMS)
         # Tell driver superclass to send a state change event.
         # Superclass will query the state.
         self._driver_event(DriverAsyncEvent.STATE_CHANGE)
@@ -689,6 +687,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         next_state = None
         result = None
         result_vals = {}
+        get_params = []
 
         log.debug("%%% IN _handler_command_get")
         # All parameters that can be set by the instrument.  Explicitly
@@ -699,12 +698,25 @@ class Protocol(CommandResponseInstrumentProtocol):
         except IndexError:
             raise InstrumentParameterException('Get command requires a parameter dict.')
 
-        if (params == DriverParameter.ALL or params == Parameter.ALL):
-            #params = [Parameter.ALL]
-            get_params = [Parameter.MAX_RATE, Parameter.INIT_SILENT_MODE, Parameter.INIT_AUTO_TELE]
+        log.debug('--------')
+        log.debug(params)
+        log.debug(DriverParameter.ALL)
+        log.debug('--------')
+        
+        if (params == None):
+            log.debug("Params is None")
+            raise InstrumentParameterException('Get command requires a parameter dict.')
+        elif (params == DriverParameter.ALL):
+            get_params = [Parameter.MAX_RATE, Parameter.INIT_SILENT_MODE, Parameter.INIT_AUTO_TELE]            
+        elif (not isinstance(params, list)):
+            get_params.append(params)
         else:
-            get_params = params
-
+            for param in params:
+                if (param == DriverParameter.ALL):
+                    get_params = [Parameter.MAX_RATE, Parameter.INIT_SILENT_MODE, Parameter.INIT_AUTO_TELE]
+                else:
+                    get_params.append(param)
+                    
         log.debug(get_params)
         
         if ((get_params == None) or (not isinstance(get_params, list))):
@@ -829,7 +841,7 @@ class Protocol(CommandResponseInstrumentProtocol):
             result = self._do_cmd_resp(Command.SET, key, val, timeout=TIMEOUT, write_delay=self.write_delay)
             log.debug('do_comd_resp returns ' + repr(result))
                 
-        retval = self._update_params(key, val)
+        retval = self._update_params()
         if (maxrate != None):
             if (maxrate == retval):
                 result = self._do_cmd_resp(Command.SAVE, None, None,
@@ -840,6 +852,16 @@ class Protocol(CommandResponseInstrumentProtocol):
                 raise InstrumentParameterException('parameter out of range')                    
         
         log.debug("after update_params")
+
+    def _handler_command_init_params(self, *args, **kwargs):
+        """
+        initialize parameters
+        """
+        next_state = None
+        result = None
+
+        self._init_params()
+        return (next_state, result)
             
     def _handler_command_exit(self, *args, **kwargs):
         """
@@ -864,6 +886,43 @@ class Protocol(CommandResponseInstrumentProtocol):
         Exit autosample state.
         """
         pass
+
+    def _handler_autosample_init_params(self, *args, **kwargs):
+        """
+        initialize parameters.  For this instrument we need to
+        put the instrument into command mode, apply the changes
+        then put it back.
+        """
+        next_state = None
+        result = None
+        error = None
+
+        try:
+        # TODO: infinite loop bad idea
+            while True:
+                self._do_cmd_no_resp(Command.STOP_SAMPLING, timeout=timeout,
+                                     expected_prompt=Prompt.COMMAND,
+                                     write_delay=self.write_delay)
+                if self._confirm_command_mode():
+                    break  
+            self._init_params()
+
+        # Catch all error so we can put ourself back into
+        # streaming.  Then rethrow the error
+        except Exception as e:
+            error = e
+
+        finally:
+            # Switch back to streaming
+            log.debug("sbe start logging again")
+            self._do_cmd_no_resp(Command.EXIT, None, write_delay=self.write_delay, timeout=TIMEOUT)
+
+        if(error):
+            log.error("Error in apply_startup_params: %s", error)
+            raise error
+
+        return (next_state, result)
+
 
     def _handler_autosample_stop_autosample(self, *args, **kwargs):
         """
@@ -988,6 +1047,52 @@ class Protocol(CommandResponseInstrumentProtocol):
     ########################################################################
     # Private helpers.
     ########################################################################
+    def _discover(self):
+        """
+        Discover current state; can be COMMAND or AUTOSAMPLE or UNKNOWN.
+        @retval (next_protocol_state, next_agent_state)
+        @throws InstrumentTimeoutException if the device cannot be woken.
+        @throws InstrumentStateException if the device response does not correspond to
+        an expected state.
+        """
+        logging = self._confirm_command_mode()
+
+        if(logging == True):
+            log.debug("_discover: in Command mode")
+            return (ProtocolState.COMMAND, ResourceAgentState.COMMAND)
+        elif(logging == False):
+            log.debug("_discover: in Streaming mode")
+            return (ProtocolState.AUTOSAMPLE, ResourceAgentState.STREAMING)
+        else:
+            log.debug("_discover: in Unknown mode")
+            return (ProtocolState.UNKNOWN, ResourceAgentState.ACTIVE_UNKNOWN)
+
+    def _is_logging(self, ds_result=None):
+        """
+        Wake up the instrument and inspect the prompt to determine if we
+        are in streaming
+        @param: ds_result, optional ds result used for testing
+        @return: True - instrument logging, False - not logging,
+                 None - unknown logging state
+        @raise: InstrumentProtocolException if we can't identify the prompt
+        """
+        if(ds_result == None):
+            log.debug("Running Sample command")
+            ds_result = self._do_cmd_resp(Command.SAMPLE, timeout=TIMEOUT, expected_prompt=Prompt.COMMAND)
+            log.debug("Sample command result: %s", ds_result)
+
+        log.debug("_is_logging: Sample result: %s", ds_result)
+
+        if prompt == Prompt.COMMAND:
+            return False
+        else:
+            match = SAMPLE_PATTERN_MATCHER.match(ds_result)
+            if(match):
+                return True
+            else:
+                log.error("_is_logging, no match: %s", ds_result)
+                return None
+
 
     def _send_wakeup(self):
         """
@@ -1031,22 +1136,22 @@ class Protocol(CommandResponseInstrumentProtocol):
             self._do_cmd_no_resp(Command.SAMPLE, timeout=TIMEOUT,
                                  expected_prompt=Prompt.COMMAND)
             (prompt, result) = self._get_response(timeout=TIMEOUT,
-                                                  expected_prompt=Prompt.COMMAND)
+                                        expected_prompt=Prompt.COMMAND)
         except InstrumentTimeoutException:
-            # If we timed out, its because we never got our $ prompt and must
-            # not be in command mode (probably got a data value in POLL mode)
-            log.debug("Confirmed NOT in command mode via timeout")
+                # If we timed out, its because we never got our $ prompt and must
+                # not be in command mode (probably got a data value in POLL mode)
+            log.debug("Confirmed NOT in command mode via Timeout exception")
             return False
+        
         except InstrumentProtocolException:
             log.debug("Confirmed NOT in command mode via protocol exception")
             return False
         # made it this far
+
         log.debug("Confirmed in command mode")
         time.sleep(0.5)
-
         return True
-
-
+        
     ###################################################################
     # Builders
     ###################################################################
@@ -1194,6 +1299,7 @@ class Protocol(CommandResponseInstrumentProtocol):
             if len(split_result) > 1:
                 response = split_result[1]
             return InstErrorCode.OK
+            #return response
         else:
             return InstErrorCode.INVALID_COMMAND
         
