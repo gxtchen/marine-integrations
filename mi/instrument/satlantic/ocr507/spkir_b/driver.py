@@ -684,6 +684,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         @retval return (next state, result)
         @throw InstrumentProtocolException For invalid parameter
         """
+        
         next_state = None
         result = None
         result_vals = {}
@@ -698,11 +699,6 @@ class Protocol(CommandResponseInstrumentProtocol):
         except IndexError:
             raise InstrumentParameterException('Get command requires a parameter dict.')
 
-        log.debug('--------')
-        log.debug(params)
-        log.debug(DriverParameter.ALL)
-        log.debug('--------')
-        
         if (params == None):
             log.debug("Params is None")
             raise InstrumentParameterException('Get command requires a parameter dict.')
@@ -719,10 +715,6 @@ class Protocol(CommandResponseInstrumentProtocol):
                     
         log.debug(get_params)
         
-        if ((get_params == None) or (not isinstance(get_params, list))):
-            log.debug("Params is None")
-            raise InstrumentParameterException('Get command requires a parameter dict.')
-                
         for param in get_params:
             log.debug("param is " + param)
             if not Parameter.has(param):
@@ -743,7 +735,8 @@ class Protocol(CommandResponseInstrumentProtocol):
             
         log.debug("Get finished, next: %s, result: %s", next_state, result) 
         return (next_state, result)
-
+        
+        
     def _get_from_cache(self, param):
         '''
         Parameters read from the instrument header generated are cached in the
