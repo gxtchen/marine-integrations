@@ -62,7 +62,8 @@ SAMPLE_PATTERN_MATCHER = re.compile(SAMPLE_PATTERN)
 CONFIGURATION_DATA_REGEX = r"Telemetry.*\sMaximum.*\sInitialize.*\sInitialize.*\sInitialize.*\sNetwork.*\sNetwork.*\sNetwork.* \d+ bps\s{2}"
 CONFIGURATION_DATA_REGEX_MATCHER = re.compile(CONFIGURATION_DATA_REGEX)
 
-IDENTIFICATION_DATA_REGEX = r"Satlantic .*\sCopyright \(C\).*\sFirmware.*\sInstrument.*\sS\/N: \d{4}\s{2}"
+#IDENTIFICATION_DATA_REGEX = r"Satlantic .*\sCopyright \(C\).*\sFirmware.*\sInstrument.*\sS\/N: \d{4}\s{2}"
+IDENTIFICATION_DATA_REGEX = r"Satlantic .*"
 IDENTIFICATION_DATA_REGEX_MATCHER = re.compile(IDENTIFICATION_DATA_REGEX)
 
 ###
@@ -119,7 +120,7 @@ class Parameter(DriverParameter):
     MAX_RATE = 'maxrate'            # maximum frame rate (Hz)
     INIT_SILENT_MODE = 'initsm'     # initial silent mode (on|off)
     INIT_AUTO_TELE = 'initat'       # initial auto telemetry (on|off)
-    #ALL = 'all'
+    #ID = 'id'
 
 class Prompt(BaseEnum):
     """
@@ -137,6 +138,7 @@ class Command(BaseEnum):
     EXIT = 'exit'
     EXIT_AND_RESET = 'exit!'
     GET = 'show'
+    GET_CONFIG = 'show'
     SET = 'set'
     RESET = 0x12                # CTRL-R
     STOP_SAMPLING = 0x03        # CTRL-C
@@ -461,7 +463,6 @@ class Protocol(CommandResponseInstrumentProtocol):
         self.write_delay = WRITE_DELAY
         self._initsm = None
         self._initat = None
-        self._id_banner = None
         self.eoln = NEWLINE
         # Build protocol state machine.
         self._protocol_fsm = InstrumentFSM(ProtocolState, ProtocolEvent,
@@ -484,6 +485,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         self._protocol_fsm.add_handler(ProtocolState.AUTOSAMPLE, ProtocolEvent.ENTER, self._handler_autosample_enter)
         self._protocol_fsm.add_handler(ProtocolState.AUTOSAMPLE, ProtocolEvent.EXIT, self._handler_autosample_exit)
         self._protocol_fsm.add_handler(ProtocolState.AUTOSAMPLE, ProtocolEvent.STOP_AUTOSAMPLE, self._handler_autosample_stop_autosample)
+        self._protocol_fsm.add_handler(ProtocolState.AUTOSAMPLE, ProtocolEvent.GET, self._handler_command_get)
         self._protocol_fsm.add_handler(ProtocolState.AUTOSAMPLE, ProtocolEvent.INIT_PARAMS, self._handler_autosample_init_params)
 
         self._protocol_fsm.add_handler(ProtocolState.DIRECT_ACCESS, ProtocolEvent.ENTER, self._handler_direct_access_enter)
@@ -502,12 +504,14 @@ class Protocol(CommandResponseInstrumentProtocol):
         self._add_build_handler(Command.DISPLAY_ID_BANNER, self._build_exec_command)
         self._add_build_handler(Command.SET, self._build_set_command)
         self._add_build_handler(Command.GET, self._build_param_fetch_command)
+        #self._add_build_handler(Command.GET_CONFIG, self._build_param_fetch_command)
         self._add_build_handler(Command.SAVE, self._build_exec_command)
         self._add_build_handler(Command.EXIT, self._build_exec_command)
         self._add_build_handler(Command.EXIT_AND_RESET, self._build_exec_command)
         self._add_build_handler(Command.SAMPLE, self._build_control_command)
         # Add response handlers for device commands.
-        self._add_response_handler(Command.GET, self._parse_get_response)
+        #self._add_response_handler(Command.GET, self._parse_get_response)
+        self._add_response_handler(Command.GET_CONFIG, self._parse_get_response)
         self._add_response_handler(Command.SET, self._parse_set_response)
         self._add_response_handler(Command.DISPLAY_ID_BANNER, self._parse_display_id_response)
         self._add_response_handler(Command.SAMPLE, self._parse_cmd_prompt_response, ProtocolState.COMMAND)
@@ -571,6 +575,13 @@ class Protocol(CommandResponseInstrumentProtocol):
                              visibility = ParameterDictVisibility.READ_ONLY,
                              display_name='Initialize auto telemetry (on|off)',
                              type=ParameterDictType.BOOL)
+        """
+        self._param_dict.add(Parameter.ID,
+                             IDENTIFICATION_DATA_REGEX,
+                             lambda match : match,
+                             str,
+                             visibility = ParameterDictVisibility.READ_ONLY)
+        """
         
     def _build_driver_dict(self):
         """
@@ -657,6 +668,8 @@ class Protocol(CommandResponseInstrumentProtocol):
             agent_state = ResourceAgentState.IDLE
 
         log.debug("_handler_unknown_discover complete")
+        log.debug(protocol_state)
+        log.debug(agent_state)
         return (protocol_state, agent_state)
 
     ########################################################################
@@ -684,100 +697,8 @@ class Protocol(CommandResponseInstrumentProtocol):
         @retval return (next state, result)
         @throw InstrumentProtocolException For invalid parameter
         """
-        
-        next_state = None
-        result = None
-        result_vals = {}
-        get_params = []
-
-        log.debug("%%% IN _handler_command_get")
-        # All parameters that can be set by the instrument.  Explicitly
-        # excludes parameters from the instrument header.
-        try:
-            params = args[0]
-
-        except IndexError:
-            raise InstrumentParameterException('Get command requires a parameter dict.')
-
-        if (params == None):
-            log.debug("Params is None")
-            raise InstrumentParameterException('Get command requires a parameter dict.')
-        elif (params == DriverParameter.ALL):
-            get_params = [Parameter.MAX_RATE, Parameter.INIT_SILENT_MODE, Parameter.INIT_AUTO_TELE]            
-        elif (not isinstance(params, list)):
-            get_params.append(params)
-        else:
-            for param in params:
-                if (param == DriverParameter.ALL):
-                    get_params = [Parameter.MAX_RATE, Parameter.INIT_SILENT_MODE, Parameter.INIT_AUTO_TELE]
-                else:
-                    get_params.append(param)
-                    
-        log.debug(get_params)
-        
-        for param in get_params:
-            log.debug("param is " + param)
-            if not Parameter.has(param):
-                raise InstrumentParameterException()
-
-            if(param == Parameter.MAX_RATE):
-                result_vals[param] = self._get_from_instrument(param)
-            elif (param == Parameter.INIT_SILENT_MODE and self._initsm == None): 
-                self._initsm = self._get_from_instrument(param)
-                result_vals[param] = self._initsm
-            elif (param == Parameter.INIT_AUTO_TELE and self._initat == None):
-                self._initat = self._get_from_instrument(param)
-                result_vals[param] = self._initat
-            else:
-                result_vals[param] = self._get_from_cache(param)
-
-        result = result_vals
-            
-        log.debug("Get finished, next: %s, result: %s", next_state, result) 
-        return (next_state, result)
-        
-        
-    def _get_from_cache(self, param):
-        '''
-        Parameters read from the instrument header generated are cached in the
-        protocol.  These currently are firmware, serial number, and instrument
-        type. Currently I assume that the header has already been displayed
-        by the instrument already.  If we can't live with that assumption
-        we should augment this method.
-        @param param: name of the parameter.  None if value not cached.
-        @return: Stored value
-        '''
-
-        log.debug("%%% IN _get_from_cache")
-        if(param == Parameter.INIT_SILENT_MODE):
-            val = self._initsm
-        elif(param == Parameter.INIT_AUTO_TELE):
-            val = self._initat
-
-        return val
-
-
-    def _get_from_instrument(self, param):
-        '''
-        instruct the instrument to get a parameter value from the instrument
-        @param param: name of the parameter
-        @return: value read from the instrument.  None otherwise.
-        @raise: InstrumentProtocolException when fail to get a response from the instrument
-        '''
-
-        val = InstErrorCode.INVALID_COMMAND
-        log.debug("%%% IN _get_from_instrument")
-        for attempt in range(RETRY):
-            # retry up to RETRY times
-            try:
-                while (val == InstErrorCode.INVALID_COMMAND):
-                    val = self._do_cmd_resp(Command.GET, param, timeout=TIMEOUT, write_delay=self.write_delay)
-                return val
-            except InstrumentProtocolException as ex:
-                pass   # GET failed, so retry again
-        else:
-            # retries exhausted, so raise exception
-            raise ex
+ 
+        return self._handler_get(*args, **kwargs)
 
     def _handler_command_set(self, *args, **kwargs):
         """Handle setting data from command mode
@@ -833,17 +754,22 @@ class Protocol(CommandResponseInstrumentProtocol):
                 maxrate = val
             result = self._do_cmd_resp(Command.SET, key, val, timeout=TIMEOUT, write_delay=self.write_delay)
             log.debug('do_comd_resp returns ' + repr(result))
+            time.sleep(0.5)
                 
-        retval = self._update_params()
-        if (maxrate != None):
-            if (maxrate == retval):
-                result = self._do_cmd_resp(Command.SAVE, None, None,
-                                   expected_prompt=Prompt.COMMAND,
-                                   timeout=TIMEOUT,
-                                   write_delay=self.write_delay)
-            else:
-                raise InstrumentParameterException('parameter out of range')                    
+        self._update_params()
         
+        if (maxrate != None):
+            config_maxrate = self._param_dict.get(Parameter.MAX_RATE)
+            if (config_maxrate != maxrate):
+                raise InstrumentParameterException('parameter out of range')
+        
+        result = self._do_cmd_resp(Command.SAVE, None, None,
+                          expected_prompt=Prompt.COMMAND,
+                          timeout=TIMEOUT,
+                          write_delay=self.write_delay)
+        
+        # time for instrument to save settings
+        time.sleep(1)
         log.debug("after update_params")
 
     def _handler_command_init_params(self, *args, **kwargs):
@@ -870,6 +796,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         """
         Enter autosample state.
         """
+        self._protocol_fsm.on_event(ProtocolEvent.INIT_PARAMS)
         # Tell driver superclass to send a state change event.
         # Superclass will query the state.
         self._driver_event(DriverAsyncEvent.STATE_CHANGE)
@@ -890,12 +817,14 @@ class Protocol(CommandResponseInstrumentProtocol):
         result = None
         error = None
 
+        log.debug('$$$ _handler_autosample_init_params')
         try:
         # TODO: infinite loop bad idea
             while True:
-                self._do_cmd_no_resp(Command.STOP_SAMPLING, timeout=timeout,
+                self._do_cmd_no_resp(Command.STOP_SAMPLING, timeout=TIMEOUT,
                                      expected_prompt=Prompt.COMMAND,
                                      write_delay=self.write_delay)
+                time.sleep(1)
                 if self._confirm_command_mode():
                     break  
             self._init_params()
@@ -907,7 +836,7 @@ class Protocol(CommandResponseInstrumentProtocol):
 
         finally:
             # Switch back to streaming
-            log.debug("sbe start logging again")
+            log.debug("spkir start logging again")
             self._do_cmd_no_resp(Command.EXIT, None, write_delay=self.write_delay, timeout=TIMEOUT)
 
         if(error):
@@ -951,12 +880,9 @@ class Protocol(CommandResponseInstrumentProtocol):
         next_agent_state = None
         result = None
 
-        if (self._id_banner == None):
-            # Issue the stop command.
-            self._id_banner = self._do_cmd_resp(Command.DISPLAY_ID_BANNER, None, timeout=TIMEOUT, write_delay=self.write_delay)
+        # Issue the display id command.
+        result = self._do_cmd_resp(Command.DISPLAY_ID_BANNER, None, timeout=TIMEOUT, write_delay=self.write_delay)
         
-        result = self._id_banner
-
         return (next_state, (next_agent_state, result))
         
     
@@ -1032,10 +958,12 @@ class Protocol(CommandResponseInstrumentProtocol):
         next_state = None
         result = None
 
-        next_state = ProtocolState.COMMAND
-        next_agent_state = ResourceAgentState.COMMAND
+        log.debug("_handler_direct_access_stop_direct: starting discover")
+        (next_state, next_agent_state) = self._discover()
+        log.debug("_handler_direct_access_stop_direct: next agent state: %s", next_agent_state)
 
         return (next_state, (next_agent_state, result))
+
 
     ########################################################################
     # Private helpers.
@@ -1277,6 +1205,20 @@ class Protocol(CommandResponseInstrumentProtocol):
         log.debug("IN _parse_display_id_response RESPONSE = " + repr(response))
         return response
 
+        """
+        split_response = response.split(self.eoln)
+        log.debug("response len is %d " % len(split_response))
+        if (len(split_response) < 9) or (split_response[-1] != Prompt.COMMAND):
+            return InstErrorCode.INVALID_COMMAND
+        #for each_response in split_response:
+        display_id = split_response[2] + " " + split_response[3] + " " + split_response[4] + " "
+        display_id = display_id + split_response[5] + " " + split_response[6]        
+        self._param_dict.update(display_id)
+ 
+        log.debug("IN _parse_display_id_response RESPONSE = " + repr(display_id))
+        return display_id
+        """
+
     def _parse_cmd_prompt_response(self, response, prompt):
         """Parse a command prompt response
         
@@ -1363,12 +1305,32 @@ class Protocol(CommandResponseInstrumentProtocol):
 
         old_config = self._param_dict.get_config()
         log.debug("Run configure command: %s" % Command.GET)
+        #get maxrate
         while (response == InstErrorCode.INVALID_COMMAND):
-            response = self._do_cmd_resp(Command.GET, Parameter.MAX_RATE, write_delay=self.write_delay, timeout=TIMEOUT)
+            response = self._do_cmd_resp(Command.GET_CONFIG, Parameter.MAX_RATE, write_delay=self.write_delay, timeout=TIMEOUT)
+        log.debug("get configure command response: %s" % response)
+        
+        #get init_silient_mode
+        response = InstErrorCode.INVALID_COMMAND
+        while (response == InstErrorCode.INVALID_COMMAND):
+            response = self._do_cmd_resp(Command.GET_CONFIG, Parameter.INIT_SILENT_MODE, write_delay=self.write_delay, timeout=TIMEOUT)
+        log.debug("get configure command response: %s" % response)
+        
+        #get init_auto_tele
+        response = InstErrorCode.INVALID_COMMAND
+        while (response == InstErrorCode.INVALID_COMMAND):
+            response = self._do_cmd_resp(Command.GET_CONFIG, Parameter.INIT_AUTO_TELE, write_delay=self.write_delay, timeout=TIMEOUT)
+        log.debug("get configure command response: %s" % response)
+        """
+        #get display id
+        response = InstErrorCode.INVALID_COMMAND
+        while (response == InstErrorCode.INVALID_COMMAND):
+            response = self._do_cmd_resp(Command.DISPLAY_ID_BANNER, None, timeout=TIMEOUT, write_delay=self.write_delay)
         #for line in response.split(NEWLINE):
         #    self._param_dict.update(line)
-        log.debug("configure command response: %s" % response)
-
+        log.debug("display id command response: %s" % response)
+        """
+        
         # Get new param dict config. If it differs from the old config,
         # tell driver superclass to publish a config change event.
         new_config = self._param_dict.get_config()
@@ -1377,8 +1339,6 @@ class Protocol(CommandResponseInstrumentProtocol):
             log.debug("configuration has changed.  Send driver event")
             self._driver_event(DriverAsyncEvent.CONFIG_CHANGE)
             
-        return response
-
     @staticmethod
     def _int_to_string(v):
         """
