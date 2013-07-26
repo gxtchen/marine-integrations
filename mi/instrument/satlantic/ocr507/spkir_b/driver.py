@@ -587,7 +587,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         """
         Populate the driver dictionary with options
         """
-        self._driver_dict.add(DriverDictKey.VENDOR_SW_COMPATIBLE, True)
+        self._driver_dict.add(DriverDictKey.VENDOR_SW_COMPATIBLE, False)
 
     def _build_command_dict(self):
         """
@@ -736,41 +736,45 @@ class Protocol(CommandResponseInstrumentProtocol):
         """
         Issue commands to the instrument to set various parameters
         """
+        
+        log.debug('%%% in _set_params')
         try:
             params = args[0]
         except IndexError:
             raise InstrumentParameterException('_set_params: Set command requires a parameter dict.')
         
-        result_vals = {} 
-        result = InstErrorCode.INVALID_COMMAND
-        maxrate = None   
-        self._verify_not_readonly(*args, **kwargs)
-
-        for (key, val) in params.iteritems():
-            log.debug("KEY = %s VALUE = %s", key, val)
-            if isinstance(val, bool):
-                val = self._true_false_to_string(val) 
-            if (key == Parameter.MAX_RATE):
-                maxrate = val
-            result = self._do_cmd_resp(Command.SET, key, val, timeout=TIMEOUT, write_delay=self.write_delay)
-            log.debug('do_comd_resp returns ' + repr(result))
-            time.sleep(0.5)
-                
-        self._update_params()
-        
-        if (maxrate != None):
-            config_maxrate = self._param_dict.get(Parameter.MAX_RATE)
-            if (config_maxrate != maxrate):
-                raise InstrumentParameterException('parameter out of range')
-        
-        result = self._do_cmd_resp(Command.SAVE, None, None,
-                          expected_prompt=Prompt.COMMAND,
-                          timeout=TIMEOUT,
-                          write_delay=self.write_delay)
-        
-        # time for instrument to save settings
-        time.sleep(1)
-        log.debug("after update_params")
+        if (params):
+            result_vals = {} 
+            result = InstErrorCode.INVALID_COMMAND
+            maxrate = None   
+            self._verify_not_readonly(*args, **kwargs)
+    
+            for (key, val) in params.iteritems():
+                log.debug("KEY = %s VALUE = %s", key, val)
+                if isinstance(val, bool):
+                    val = self._true_false_to_string(val) 
+                if (key == Parameter.MAX_RATE):
+                    maxrate = val
+                result = self._do_cmd_resp(Command.SET, key, val, timeout=TIMEOUT, write_delay=self.write_delay)
+                log.debug('do_comd_resp returns ' + repr(result))
+                time.sleep(1)
+                    
+            self._update_params()
+            
+            if (maxrate != None):
+                config_maxrate = self._param_dict.get(Parameter.MAX_RATE)
+                if (config_maxrate != maxrate):
+                    raise InstrumentParameterException('parameter out of range')
+            
+            result = self._do_cmd_resp(Command.SAVE, None, None,
+                              expected_prompt=Prompt.COMMAND,
+                              timeout=TIMEOUT,
+                              write_delay=self.write_delay)
+            
+            # time for instrument to save settings
+            time.sleep(1)
+            
+        log.debug("%%% end of _set_params")
 
     def _handler_command_init_params(self, *args, **kwargs):
         """
@@ -1321,16 +1325,7 @@ class Protocol(CommandResponseInstrumentProtocol):
         while (response == InstErrorCode.INVALID_COMMAND):
             response = self._do_cmd_resp(Command.GET_CONFIG, Parameter.INIT_AUTO_TELE, write_delay=self.write_delay, timeout=TIMEOUT)
         log.debug("get configure command response: %s" % response)
-        """
-        #get display id
-        response = InstErrorCode.INVALID_COMMAND
-        while (response == InstErrorCode.INVALID_COMMAND):
-            response = self._do_cmd_resp(Command.DISPLAY_ID_BANNER, None, timeout=TIMEOUT, write_delay=self.write_delay)
-        #for line in response.split(NEWLINE):
-        #    self._param_dict.update(line)
-        log.debug("display id command response: %s" % response)
-        """
-        
+       
         # Get new param dict config. If it differs from the old config,
         # tell driver superclass to publish a config change event.
         new_config = self._param_dict.get_config()

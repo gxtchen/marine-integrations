@@ -533,6 +533,58 @@ class DriverQualificationTest(InstrumentDriverQualificationTestCase, DriverTestM
 #    def setUp(self):
 #        InstrumentDriverQualificationTestCase.setUp(self)
 
+    def test_startup_parameters(self):
+                
+        '''
+        test we can initialize startup parameters in both 
+        command mode and streaming mode
+        '''
+                        
+        self.assert_enter_command_mode()
+
+        # Now reset and try to discover.  This will stop the driver which holds the current
+        # instrument state.
+        self.assert_reset()
+        self.assert_discover(ResourceAgentState.COMMAND)
+
+        self.assert_get_parameter(Parameter.MAX_RATE, 0.0)
+        self.assert_set_parameter(Parameter.MAX_RATE, 10.0)
+        # Now put the instrument in streaming and reset the driver again.
+        self.assert_start_autosample()
+        self.assert_reset()
+
+        # When the driver reconnects it should be streaming
+        self.assert_discover(ResourceAgentState.STREAMING)
+        self.assert_get_parameter(Parameter.MAX_RATE, 0.0)
+        self.assert_stop_autosample()
+        self.assert_reset()
+        
+        self.assert_discover(ResourceAgentState.COMMAND)
+
+        self.assert_get_parameter(Parameter.MAX_RATE, 0.0)
+       
+    def test_direct_access_telnet_mode(self):
+        """
+        Test that we can connect to the instrument via direct access.  Also
+        verify that direct access parameters are reset on exit.
+        """
+        self.assert_enter_command_mode()
+
+        # go into direct access, and muck up a setting.
+        self.assert_direct_access_start_telnet(timeout=600)
+        self.assertTrue(self.tcp_client)
+        cmd_line = 'id\r\n'
+        for char in cmd_line:
+            self.tcp_client.send_data(char)
+            time.sleep(0.5)
+
+        cmd_line = 'exit\r\n'
+        for char in cmd_line:
+            self.tcp_client.send_data(char)
+            time.sleep(0.5)
+        
+        self.assert_direct_access_stop_telnet()
+
     def test_get_set_parameters(self):
         '''
         verify that all parameters can be get set properly, this includes
