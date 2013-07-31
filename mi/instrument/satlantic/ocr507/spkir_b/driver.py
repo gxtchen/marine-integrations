@@ -77,7 +77,7 @@ class DataParticleType(BaseEnum):
     RAW = CommonDataParticleType.RAW
     PREST_IDENTIFICATION_DATA = 'prest_identification_data'
     PREST_CONFIGURATION_DATA = 'prest_configuration_data'
-    PREST_REAL_TIME = 'prest_real_time'
+    PARSED = 'parsed'
 
 class ProtocolState(BaseEnum):
     """
@@ -324,7 +324,7 @@ class SpkirBSampleDataParticle(DataParticle):
     Routines for parsing raw data into a data particle structure. Override
     the building of values, and the rest should come along for free.
     """
-    _data_particle_type = DataParticleType.PREST_REAL_TIME
+    _data_particle_type = DataParticleType.PARSED
 
     def _build_parsed_values(self):
         """

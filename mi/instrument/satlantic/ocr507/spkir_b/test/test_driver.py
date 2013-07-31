@@ -212,7 +212,7 @@ class DriverTestMixinSub(DriverTestMixin):
         @param verify_values:  bool, should we verify parameter values
         '''
         self.assert_data_particle_keys(SpkirBSampleDataParticleKey, self._prest_real_time_parameters)
-        self.assert_data_particle_header(data_particle, DataParticleType.PREST_REAL_TIME)
+        self.assert_data_particle_header(data_particle, DataParticleType.PARSED)
         self.assert_data_particle_parameters(data_particle, self._prest_real_time_parameters, verify_values)
 
     def assertSampleDataParticle(self, data_particle):
@@ -499,7 +499,7 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         self.assert_initialize_driver()
 
         self.assert_driver_command(ProtocolEvent.START_AUTOSAMPLE, state=ProtocolState.AUTOSAMPLE, delay=1)
-        self.assert_async_particle_generation(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time, timeout=600)
+        self.assert_async_particle_generation(DataParticleType.PARSED, self.assert_particle_real_time, timeout=600)
 
         self.assert_driver_command(ProtocolEvent.STOP_AUTOSAMPLE, state=ProtocolState.COMMAND, delay=1)
 
@@ -508,7 +508,7 @@ class DriverIntegrationTest(InstrumentDriverIntegrationTestCase, DriverTestMixin
         self.assert_driver_command(ProtocolEvent.START_AUTOSAMPLE)
         self.assert_current_state(ProtocolState.AUTOSAMPLE)
 
-        self.assert_async_particle_generation(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time, particle_count = 6, timeout=60)
+        self.assert_async_particle_generation(DataParticleType.PARSED, self.assert_particle_real_time, particle_count = 6, timeout=60)
 
         self.assert_driver_command(ProtocolEvent.STOP_AUTOSAMPLE)
         self.assert_current_state(ProtocolState.COMMAND)
@@ -578,12 +578,21 @@ class DriverQualificationTest(InstrumentDriverQualificationTestCase, DriverTestM
             self.tcp_client.send_data(char)
             time.sleep(0.5)
 
+        self.assert_direct_access_stop_telnet()
+        state = self.instrument_agent_client.get_agent_state()
+        self.assertEqual(state, ResourceAgentState.COMMAND)
+
+        # go into direct access, and muck up a setting.
+        self.assert_direct_access_start_telnet(timeout=600)
+        self.assertTrue(self.tcp_client)
         cmd_line = 'exit\r\n'
         for char in cmd_line:
             self.tcp_client.send_data(char)
             time.sleep(0.5)
         
         self.assert_direct_access_stop_telnet()
+        state = self.instrument_agent_client.get_agent_state()
+        self.assertEqual(state, ResourceAgentState.STREAMING)
 
     def test_get_set_parameters(self):
         '''
@@ -592,17 +601,13 @@ class DriverQualificationTest(InstrumentDriverQualificationTestCase, DriverTestM
         '''
         self.assert_enter_command_mode()
         self.assert_set_parameter(Parameter.MAX_RATE, 0.0)
-        self.assert_get_parameter(Parameter.MAX_RATE, 0.0)
         self.assert_set_parameter(Parameter.MAX_RATE, 1.0)
-        self.assert_get_parameter(Parameter.MAX_RATE, 1.0)
         self.assert_set_parameter(Parameter.MAX_RATE, 10.0)
-        self.assert_get_parameter(Parameter.MAX_RATE, 10.0)
         self.assert_set_parameter(Parameter.MAX_RATE, 0.0)
-        self.assert_get_parameter(Parameter.MAX_RATE, 0.0)
 
         # Change these values anyway just in case it ran first.
         self.assert_start_autosample()
-        self.assert_particle_async(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time)
+        self.assert_particle_async(DataParticleType.PARSED, self.assert_particle_real_time)
 
         # Stop autosample and do run a couple commands.
         self.assert_stop_autosample()
@@ -645,7 +650,7 @@ class DriverQualificationTest(InstrumentDriverQualificationTestCase, DriverTestM
     def assert_cycle(self):
         self.assert_start_autosample()
 
-        self.assert_particle_async(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time)
+        self.assert_particle_async(DataParticleType.PARSED, self.assert_particle_real_time)
 
         self.assert_stop_autosample()
 
@@ -669,10 +674,10 @@ class DriverQualificationTest(InstrumentDriverQualificationTestCase, DriverTestM
         self.assert_set_parameter(Parameter.MAX_RATE, 0.0)
 
         self.assert_start_autosample()
-        self.assert_particle_async(DataParticleType.PREST_REAL_TIME, self.assert_particle_real_time)
+        self.assert_particle_async(DataParticleType.PARSED, self.assert_particle_real_time)
 
         # Stop autosample and do run a couple commands.
         self.assert_stop_autosample()
         
         # Restart autosample and gather a couple samples
-        self.assert_sample_autosample(self.assert_particle_real_time, DataParticleType.PREST_REAL_TIME)
+        self.assert_sample_autosample(self.assert_particle_real_time, DataParticleType.PARSED)
