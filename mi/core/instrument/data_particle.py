@@ -47,6 +47,7 @@ class DataParticleKey(BaseEnum):
     VALUE_ID = "value_id"
     VALUE = "value"
     BINARY = "binary"
+    NEW_SEQUENCE = "new_sequence"
 
 class DataParticleValue(BaseEnum):
     JSON_DATA = "JSON_Data"
@@ -78,11 +79,15 @@ class DataParticle(object):
                  port_timestamp=None,
                  internal_timestamp=None,
                  preferred_timestamp=DataParticleKey.PORT_TIMESTAMP,
-                 quality_flag=DataParticleValue.OK):
+                 quality_flag=DataParticleValue.OK,
+                 new_sequence=None):
         """ Build a particle seeded with appropriate information
         
         @param raw_data The raw data used in the particle
         """
+        if new_sequence is not None and not isinstance(new_sequence, bool):
+            raise TypeError("new_sequence is not a bool")
+
         self.contents = {
             DataParticleKey.PKT_FORMAT_ID: DataParticleValue.JSON_DATA,
             DataParticleKey.PKT_VERSION: 1,
@@ -90,9 +95,19 @@ class DataParticle(object):
             DataParticleKey.INTERNAL_TIMESTAMP: internal_timestamp,
             DataParticleKey.DRIVER_TIMESTAMP: ntplib.system_to_ntp_time(time.time()),
             DataParticleKey.PREFERRED_TIMESTAMP: preferred_timestamp,
-            DataParticleKey.QUALITY_FLAG: quality_flag
+            DataParticleKey.QUALITY_FLAG: quality_flag,
+            DataParticleKey.NEW_SEQUENCE: new_sequence
         }
+
         self.raw_data = raw_data
+
+    @classmethod
+    def type(cls):
+        """
+        return the data particle type
+        @return: data particle type
+        """
+        return cls._data_particle_type
 
     def set_internal_timestamp(self, timestamp=None, unix_time=None):
         """
@@ -149,17 +164,14 @@ class DataParticle(object):
 
         return self._data_particle_type
 
-    def generate(self, sorted=False):
+    def generate_dict(self):
         """
-        Generates a JSON_parsed packet from a sample dictionary of sensor data and
-        associates a timestamp with it
-        
-        @param portagent_time The timestamp from the instrument in NTP binary format 
-        @param data The actual data being sent in raw byte[] format
-        @param sorted Returned sorted json dict, useful for testing
-        @return A JSON_raw string, properly structured with port agent time stamp
-           and driver timestamp
-        @throws InstrumentDriverException If there is a problem with the inputs
+        Generate a simple dictionary of sensor data and timestamps, without
+        going to JSON. This is useful for the times when JSON is not needed to
+        go across an interface. There are times when particles are used
+        internally to a component/process/module/etc.
+        @retval A python dictionary with the proper timestamps and data values
+        @throws InstrumentDriverException if there is a problem wtih the inputs
         """
         # Do we wan't downstream processes to check this?
         #for time in [DataParticleKey.INTERNAL_TIMESTAMP,
@@ -179,12 +191,23 @@ class DataParticle(object):
         result[DataParticleKey.VALUES] = values
 
         log.debug("Serialize result: %s", result)
-
-        # JSONify response, sorting is nice for testing
-        # But sorting is awfully slow
-        json_result = json.dumps(result, sort_keys=sorted)
+        return result
         
-        # return result
+    def generate(self, sorted=False):
+        """
+        Generates a JSON_parsed packet from a sample dictionary of sensor data and
+        associates a timestamp with it
+        
+        @param portagent_time The timestamp from the instrument in NTP binary format 
+        @param data The actual data being sent in raw byte[] format
+        @param sorted Returned sorted json dict, useful for testing, but slow,
+           so dont do it unless it is important
+        @return A JSON_raw string, properly structured with port agent time stamp
+           and driver timestamp
+        @throws InstrumentDriverException If there is a problem with the inputs
+        """
+        result = self.generate_dict()
+        json_result = json.dumps(result, sort_keys=sorted)
         return json_result
         
     def _build_parsed_values(self):

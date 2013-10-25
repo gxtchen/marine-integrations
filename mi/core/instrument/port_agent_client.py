@@ -41,7 +41,7 @@ TYPE_INDEX = 3
 LENGTH_INDEX = 4 # packet size (including header)
 CHECKSUM_INDEX = 5
 TIMESTAMP_UPPER_INDEX = 6
-TIMESTAMP_LOWER_INDEX = 6
+TIMESTAMP_LOWER_INDEX = 7
 
 SYSTEM_EPOCH = datetime.date(*time.gmtime(0)[0:3])
 NTP_EPOCH = datetime.date(1900, 1, 1)
@@ -107,6 +107,7 @@ class PortAgentPacket():
         upper = variable_tuple[TIMESTAMP_UPPER_INDEX]
         lower = variable_tuple[TIMESTAMP_LOWER_INDEX]
         self.__port_agent_timestamp = float("%s.%s" % (upper, lower))
+        log.debug("port_timestamp: %f", self.__port_agent_timestamp)
 
     def pack_header(self):
         """
@@ -254,7 +255,7 @@ class PortAgentClient(object):
     
     RECOVERY_SLEEP_TIME = 2
     HEARTBEAT_INTERVAL_COMMAND = "heartbeat_interval "
-    BREAK_COMMAND = "break"
+    BREAK_COMMAND = "break "
     
     def __init__(self, host, port, cmd_port, delim=None):
         """
@@ -472,11 +473,11 @@ class PortAgentClient(object):
         log.debug("Sending config parameter: %s" % (command))
         self._command_port_agent(command)
 
-    def send_break(self):
+    def send_break(self, duration):
         """
         Command the port agent to send a break
         """
-        self._command_port_agent(self.BREAK_COMMAND)
+        self._command_port_agent(self.BREAK_COMMAND + str(duration))
 
     def _command_port_agent(self, cmd):
         """
@@ -493,7 +494,7 @@ class PortAgentClient(object):
             sock.connect((self.host, self.cmd_port))
             log.info('PortAgentClient._command_port_agent(): connected to port agent at %s:%i.'
                      % (self.host, self.cmd_port))
-            self.send(cmd, sock) 
+            self.send(cmd, sock)
             sock.close()
         except Exception as e:
             log.error("send_break(): Exception occurred.", exc_info=True)
@@ -803,16 +804,19 @@ class Listener(threading.Thread):
                         else:
                             raise
 
-                paPacket = PortAgentPacket()
-                paPacket.unpack_header(str(header))
-                data_size = paPacket.get_data_length()
-                bytes_left = data_size
-
-                log.debug('Expecting DATA BYTES %d' % data_size)
-
-                data = bytearray(data_size)
-                dataview = memoryview(data)
-
+                """
+                Only do this if we've received the whole header, otherwise (ex. during shutdown)
+                we can have a completely invalid header, resulting in negative count exceptions.
+                """
+                if (bytes_left == 0):
+                    paPacket = PortAgentPacket()
+                    paPacket.unpack_header(str(header))
+                    data_size = paPacket.get_data_length()
+                    bytes_left = data_size
+                    data = bytearray(data_size)
+                    dataview = memoryview(data)
+                    log.debug('Expecting DATA BYTES %d' % data_size)
+                    
                 while bytes_left and not self._done:
                     try:
                         bytesrx = self.sock.recv_into(dataview[data_size - bytes_left:], bytes_left)
@@ -827,12 +831,11 @@ class Listener(threading.Thread):
                         else:
                             raise
 
-                paPacket.attach_data(str(data))
-
                 if not self._done:
                     """
                     Should have complete port agent packet.
                     """
+                    paPacket.attach_data(str(data))
                     log.debug("HANDLE PACKET")
                     self.handle_packet(paPacket)
 
@@ -866,7 +869,6 @@ class Listener(threading.Thread):
                 self.default_callback_error(e)
 
         log.info('Port_agent_client thread done listening; going away.')
-
 
     def _invoke_error_callback(self, recovery_attempt, error_string = "No error string passed."):
         """

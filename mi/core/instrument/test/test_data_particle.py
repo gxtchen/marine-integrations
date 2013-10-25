@@ -81,6 +81,7 @@ class TestUnitDataParticle(MiUnitTestCase):
                                 DataParticleKey.STREAM_NAME: TEST_PARTICLE_TYPE,
                                 DataParticleKey.PORT_TIMESTAMP: self.sample_port_timestamp,
                                 DataParticleKey.DRIVER_TIMESTAMP: self.sample_driver_timestamp,
+                                DataParticleKey.NEW_SEQUENCE: None,
                                 DataParticleKey.PREFERRED_TIMESTAMP: DataParticleKey.DRIVER_TIMESTAMP,
                                 DataParticleKey.QUALITY_FLAG: DataParticleValue.INVALID,
                                 DataParticleKey.VALUES: [
@@ -108,6 +109,7 @@ class TestUnitDataParticle(MiUnitTestCase):
                                DataParticleKey.INTERNAL_TIMESTAMP: self.sample_internal_timestamp,
                                DataParticleKey.PORT_TIMESTAMP: self.sample_port_timestamp,
                                DataParticleKey.DRIVER_TIMESTAMP: self.sample_driver_timestamp,
+                               DataParticleKey.NEW_SEQUENCE: None,
                                DataParticleKey.PREFERRED_TIMESTAMP: DataParticleKey.PORT_TIMESTAMP,
                                DataParticleKey.QUALITY_FLAG: "ok",
                                DataParticleKey.VALUES: [
@@ -132,8 +134,11 @@ class TestUnitDataParticle(MiUnitTestCase):
         # compare to JSON-ified output
         #   Be sure to check timestamp format as BASE64 and de-encode it.
         #   Sanity check it as well.
+        dict_result = self.parsed_test_particle.generate_dict()
         parsed_result = self.parsed_test_particle.generate(sorted=True)
         decoded_parsed = json.loads(parsed_result)
+
+        self.assertEqual(dict_result, decoded_parsed)
 
         driver_time = decoded_parsed["driver_timestamp"]
         self.sample_parsed_particle["driver_timestamp"] = driver_time
@@ -141,6 +146,43 @@ class TestUnitDataParticle(MiUnitTestCase):
         # run it through json so unicode and everything lines up
         standard = json.dumps(self.sample_parsed_particle, sort_keys=True)
         self.assertEqual(parsed_result, standard)
+
+    def test_new_sequence_flag(self):
+        """
+        Verify that we can set the new sequence flag
+        """
+        # Verify we can set the new sequence flag
+        particle = self.TestDataParticle(self.sample_raw_data,
+                                         port_timestamp=self.sample_port_timestamp,
+                                         quality_flag=DataParticleValue.INVALID,
+                                         preferred_timestamp=DataParticleKey.DRIVER_TIMESTAMP,
+                                         new_sequence=True)
+        dict_result = particle.generate_dict()
+        self.assertFalse(hasattr(dict_result, DataParticleKey.NEW_SEQUENCE))
+
+        particle = self.TestDataParticle(self.sample_raw_data,
+                                         port_timestamp=self.sample_port_timestamp,
+                                         quality_flag=DataParticleValue.INVALID,
+                                         preferred_timestamp=DataParticleKey.DRIVER_TIMESTAMP,
+                                         new_sequence=True)
+        dict_result = particle.generate_dict()
+        self.assertTrue(dict_result[DataParticleKey.NEW_SEQUENCE])
+
+        particle = self.TestDataParticle(self.sample_raw_data,
+                                         port_timestamp=self.sample_port_timestamp,
+                                         quality_flag=DataParticleValue.INVALID,
+                                         preferred_timestamp=DataParticleKey.DRIVER_TIMESTAMP,
+                                         new_sequence=False)
+        dict_result = particle.generate_dict()
+        self.assertFalse(dict_result[DataParticleKey.NEW_SEQUENCE])
+
+        with self.assertRaises(TypeError):
+            particle = self.TestDataParticle(self.sample_raw_data,
+                                             port_timestamp=self.sample_port_timestamp,
+                                             quality_flag=DataParticleValue.INVALID,
+                                             preferred_timestamp=DataParticleKey.DRIVER_TIMESTAMP,
+                                             new_sequence='a')
+
 
     def test_raw_generate(self):
         """
@@ -151,8 +193,11 @@ class TestUnitDataParticle(MiUnitTestCase):
         # compare to JSON-ified output
         #   Be sure to check timestamp format as BASE64 and de-encode it.
         #   Sanity check it as well.
+        dict_result = self.raw_test_particle.generate_dict()
         raw_result = self.raw_test_particle.generate(sorted=True)
         decoded_raw = json.loads(raw_result)
+        
+        self.assertEqual(dict_result, decoded_raw)
 
         # get values that change from instance to instance to maintain them the same across instances
         checksum = decoded_raw[DataParticleKey.VALUES][3][DataParticleKey.VALUE]
@@ -166,7 +211,7 @@ class TestUnitDataParticle(MiUnitTestCase):
         standard = json.dumps(self.sample_raw_particle, sort_keys=True)
 
         self.assertEqual(raw_result, standard)
-
+        
     def test_timestamps(self):
         """
         Test bad timestamp configurations

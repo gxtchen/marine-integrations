@@ -14,10 +14,12 @@ import re
 import os
 import sys
 import shutil
+import subprocess
 from os.path import basename, dirname
 from operator import itemgetter
 from string import Template
 
+from mi.idk import prompt
 from mi.idk.config import Config
 from mi.idk.metadata import Metadata
 from mi.idk.driver_generator import DriverGenerator
@@ -41,6 +43,7 @@ from snakefood.find import ERROR_IMPORT, ERROR_SYMBOL, ERROR_UNUSED
 from snakefood.fallback.collections import defaultdict
 from snakefood.roots import *
 
+REPODIR = '/tmp/repoclone/marine-integrations'
 
 class DependencyList:
     """
@@ -156,11 +159,10 @@ class DependencyList:
         
                     to_ = relfile(xfn, ignorefiles)
                     into = to_[0] in inroots
-                    log.debug( "  from: %s" % from_[1])
-                    log.debug( "  to: %s" % to_[1])
+                    log.debug( "  from: %s,  to: %s" % (from_[1], to_[1]))
 
                     if dfn in alldependencies:
-                        log.debug("Already added %s to dependency list" % dfn)
+                        log.trace("Already added %s to dependency list" % dfn)
                     else:
                         log.debug("Add %s to dependency list" % dfn)
                         allfiles[from_].add(to_)
@@ -366,8 +368,7 @@ class DriverFileList:
         test_files = self._scrub_test_files(self.test_dependency.internal_dependencies())
         extra_files = []
         extra_files = self._extra_files()
-        config_files = self._config_files()
-        files = extra_files + config_files + driver_files + test_files
+        files = extra_files + driver_files + test_files
 
         for fn in files:
             if not fn in result:
@@ -375,7 +376,7 @@ class DriverFileList:
                 f = rootp.sub('', f)
                 result.append(f)
 
-        log.debug("Result File List: %s" % result)
+        log.debug("Result File List: %s", result)
         return result
 
     def _scrub_test_files(self, filelist):
@@ -393,19 +394,18 @@ class DriverFileList:
 
         return result
 
-    def _config_files(self):
-        return ["res/config/mi-logging.yml"]
-
     def _extra_files(self):
         result = []
         p = re.compile('\.(py|pyc)$')
-        
         for root, dirs, names in os.walk(dirname(self.driver_file)):
             for filename in names:
                 # Ignore python files
                 if not p.search(filename):
                     result.append("%s/%s" % (root, filename))
                 
+        # Add the resources directory __init__.py file, too. Without a .py file,
+        # it can get forgotten by dependencies
+        # result.append(os.path.join(dirname(self.driver_file), "resource/__init__.py"))
         return result
     
 class EggGenerator:
@@ -413,13 +413,14 @@ class EggGenerator:
     Generate driver egg
     """
 
-    def __init__(self, metadata):
+    def __init__(self, metadata, repo_dir=REPODIR):
         """
         @brief Constructor
         @param metadata IDK Metadata object
         """
         self.metadata = metadata
         self._bdir = None
+        self._repodir = repo_dir
 
         if not self._tmp_dir():
             raise InvalidParameters("missing tmp_dir configuration")
@@ -442,7 +443,13 @@ class EggGenerator:
         return test_config.driver_class
 
     def _repo_dir(self):
-        return Config().get('working_repo')
+        return self._repodir
+    
+    def _res_dir(self):
+        return os.path.join(self._versioned_dir(), 'res')
+    
+    def _res_config_dir(self):
+        return os.path.join(self._res_dir(), 'config' )
 
     def _tmp_dir(self):
         return Config().get('tmp_dir')
@@ -454,7 +461,7 @@ class EggGenerator:
         return os.path.join(Config().template_dir(), 'setup.tmpl' )
 
     def _main_path(self):
-        return os.path.join(self._build_dir(), 'mi/main.py' )
+        return os.path.join(self._versioned_dir(), 'mi/main.py' )
 
     def _main_template_path(self):
         return os.path.join(Config().template_dir(), 'main.tmpl' )
@@ -464,7 +471,7 @@ class EggGenerator:
                 self.metadata.driver_make,
                 self.metadata.driver_model,
                 self.metadata.driver_name,
-                self.metadata.version,
+                self.metadata.version.replace('.', '_'),
             )
 
     def _build_dir(self):
@@ -477,33 +484,112 @@ class EggGenerator:
         return self._bdir
 
     def _generate_build_dir(self):
-        original_dir = os.path.join(self._tmp_dir(), self._build_name())
-        build_dir = original_dir
-        build_count = 1
-
-        # Find a directory that doesn't exist
-        while os.path.exists(build_dir):
-            build_dir = "%s.%03d" % (original_dir, build_count)
-            log.debug("build dir test: %s" % build_dir)
-            build_count += 1
-
+        build_dir = os.path.join(self._tmp_dir(), self._build_name())
+        # clean out an old build if it exists
+        if os.path.exists(build_dir):
+            shutil.rmtree(build_dir)
         return build_dir
 
+    def _versioned_dir(self):
+        return self._build_dir()
+        #return os.path.join(self._build_dir(),
+        #                    self._build_name())
+
     def _stage_files(self, files):
+        """
+        Copy files from the original directory into two levels of versioned
+        directories within a staging directory, and replace the mi namespace
+        with the versioned driver name.mi to account for the new directory
+        (only the lower versioned dir is included in the egg)
+        @param files - a list of files to copy into the staging directory
+        """
+        # make two levels of versioned file directories, i.e.
+        #     driverA_0_1 (= build_dir)
+        #         driverA_0_1 (= versioned_dir)
+        # then copy driverA files into the bottom versioned dir
         if not os.path.exists(self._build_dir()):
             os.makedirs(self._build_dir())
+        if not os.path.exists(self._versioned_dir()):
+            os.makedirs(self._versioned_dir())
 
         for file in files:
-            dest = os.path.join(self._build_dir(), file)
+            dest = os.path.join(self._versioned_dir(), file)
             destdir = dirname(dest)
             source = os.path.join(self._repo_dir(), file)
 
-            log.debug(" Copy %s => %s" % (source, dest))
+            # this one goes elsewhere so the InstrumentDict can find it
+            if basename(file) == 'strings.yml':
+                dest = os.path.join(self._res_dir(), basename(file))
+                destdir = dirname(dest)
 
+            log.debug(" Copy %s => %s" % (source, dest))
+            # make sure the destination directory exists, if it doesn't make it
             if not os.path.exists(destdir):
                 os.makedirs(destdir)
 
             shutil.copy(source, dest)
+
+            # replace mi in the copied files with the versioned driver module.mi
+            # this is necessary because the top namespace in the versioned files starts
+            # with the versioned driver name directory, not mi
+            #driver_file = open(dest, "r")
+            #contents = driver_file.read()
+            #driver_file.close()
+            #new_contents = re.sub(r'(^import |^from |\'|= )mi\.|res/config/mi-logging|\'mi\'',
+            #                      self._mi_replace,
+            #                      contents,
+            #                      count=0,
+            #                      flags=re.MULTILINE)
+            #driver_file = open(dest, "w")
+            #driver_file.write(new_contents)
+            #driver_file.close()
+
+            
+        # need to add mi-logging.yml special because it is not in cloned repo, only in local repository
+        milog = "mi-logging.yml"
+        dest = os.path.join(self._res_config_dir(), milog)
+        destdir = dirname(dest)
+        source = os.path.join(Config().base_dir(), "res/config/" + milog)
+
+        log.debug(" Copy %s => %s" % (source, dest))
+        # make sure the destination directory exists, if it doesn't make it
+        if not os.path.exists(destdir):
+            os.makedirs(destdir)
+        # Now that it exists, make the package scanner find it           
+        self._create_file(os.path.join(self._res_dir(), "__init__.py"))
+        self._create_file(os.path.join(self._res_config_dir(), "__init__.py"))        
+
+        shutil.copy(source, dest)
+
+        # we need to make sure an init file is in the versioned dir and
+        # resource directories so that find_packages() will look in here
+        init_file_list = [os.path.join(self._versioned_dir(), "__init__.py"),
+                          os.path.join(self._versioned_dir(), "res", "__init__.py"),
+                          os.path.join(self._versioned_dir(), "res", "config", "__init__.py")]
+        for file in init_file_list:
+            self._create_file(file)
+            
+    @staticmethod
+    def _create_file(file):
+        """
+        Create a file if it isnt there already
+        """
+        if not os.path.exists(file):
+            init_file = open(file, "w")
+            init_file.close()
+        
+    def _mi_replace(self, matchobj):
+        """
+        This function is used in regex sub to replace mi with the versioned
+        driver name followed by mi
+        @param matchobj - the match object from re.sub
+        """
+        if matchobj.group(0) == 'res/config/mi-logging':
+            return self._build_name() + '/' + matchobj.group(0)
+        elif matchobj.group(0) == '\'mi\'':
+            return '\'' + self._build_name() + '.mi\''
+        else:
+            return matchobj.group(1) + self._build_name() + '.mi.'   
 
     def _get_template(self, template_file):
         """
@@ -529,22 +615,20 @@ class EggGenerator:
         setup_file = self._setup_path()
         setup_template = self._get_template(self._setup_template_path())
 
-        log.debug("Create setup.py file: %s" % setup_file )
-        log.debug("setup.py template file: %s" % self._setup_template_path())
-        log.debug("setup.py template date: %s" % self._setup_template_data())
+        log.debug("Create setup.py file: %s", setup_file )
+        log.debug("setup.py template file: %s", self._setup_template_path())
+        log.debug("setup.py template date: %s", self._setup_template_data())
+        log.debug("setup.py template: %s", setup_template)
 
         ofile = open(setup_file, 'w')
         code = setup_template.substitute(self._setup_template_data())
+        log.debug("CODE: %s", code)
         ofile.write(code)
         ofile.close()
 
     def _setup_template_data(self):
-        name = "%s_%s_%s" % (self.metadata.driver_make,
-                             self.metadata.driver_model,
-                             self.metadata.driver_name)
-
         return {
-            'name': name,
+            'name': self._build_name(),
             'version': self.metadata.version,
             'description': 'ooi core driver',
             'author': self.metadata.author,
@@ -552,11 +636,13 @@ class EggGenerator:
             'url': 'http://www.oceanobservatories.org',
             'driver_module': self._driver_module(),
             'driver_class': self._driver_class(),
+            'driver_path': self.metadata.relative_driver_path(),
+            'short_name': self.metadata.relative_driver_path().replace('/', '_')
         }
 
     def _generate_main_file(self):
-        if not os.path.exists(self._build_dir()):
-            os.makedirs(self._build_dir())
+        if not os.path.exists(self._versioned_dir()):
+            os.makedirs(self._versioned_dir())
 
         main_file= self._main_path()
         main_template = self._get_template(self._main_template_path())
@@ -577,7 +663,6 @@ class EggGenerator:
         self._verify_python()
         self._verify_metadata()
         self._verify_version()
-        self._verify_git()
 
     def _verify_metadata(self):
         """
@@ -599,23 +684,12 @@ class EggGenerator:
         if not p.findall("%s" % version):
             raise ValidationFailure("Version format incorrect '%s', should be x.x.x" % version)
 
-        #TODO Add check to see if there is already the same version package built
-
-    def _verify_git(self):
-        """
-        Ensure the repository is up to date.  All files should be committed and pushed.  The local repo
-        should be in sync with the mainline
-        """
-        #TODO Update this check
-        pass
-
     def _verify_python(self):
         """
         Ensure we build with the correct python version
         """
         if sys.version_info < (2, 7) or sys.version_info >= (2, 8):
             raise ValidationFailure("Egg generation required version 2.7 of python")
-
 
     def _build_egg(self, files):
         try:
@@ -628,11 +702,9 @@ class EggGenerator:
             log.info("CMD: %s" % cmd)
             os.system(cmd)
 
-            egg_file = "%s/dist/%s_%s_%s-%s-py2.7.egg" % (self._build_dir(),
-                                                          self.metadata.driver_make,
-                                                          self.metadata.driver_model,
-                                                          self.metadata.driver_name,
-                                                          self.metadata.version)
+            egg_file = "%s/dist/%s-%s-py2.7.egg" % (self._build_dir(),
+                                                    self.metadata.relative_driver_path().replace('/', '_'),
+                                                    self.metadata.version)
 
             # Remove all pyc files from the egg.  There was a jira case that suggested
             # including the compiled py files caused the drivers to run slower.
@@ -645,14 +717,15 @@ class EggGenerator:
             log.error("Failed egg verification: %s" % e )
             return None
 
-        log.debug("Egg file created:: %s" % egg_file)
+        log.debug("Egg file created: %s" % egg_file)
         return egg_file
 
     def save(self):
-        filelist = DriverFileList(self.metadata, self._repo_dir())
+        driver_file = self.metadata.driver_dir() + '/' + DriverGenerator(self.metadata).driver_filename()
+        driver_test_file = self.metadata.driver_dir() + '/test/' + DriverGenerator(self.metadata).driver_test_filename()
+        filelist = DriverFileList(self.metadata, self._repo_dir(), driver_file, driver_test_file)
         return self._build_egg(filelist.files())
 
 
 if __name__ == '__main__':
     pass
-

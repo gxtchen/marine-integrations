@@ -41,19 +41,22 @@ class Metadata():
         """
         if not self.driver_make:
             raise DriverParameterUndefined("driver_make undefined in metadata")
-            
+
         if not self.driver_model:
             raise DriverParameterUndefined("driver_model undefined in metadata")
-            
+
         if not self.driver_name:
             raise DriverParameterUndefined("driver_name undefined in metadata")
-            
-        return os.path.join(Config().base_dir(),
+
+        return os.path.join(self.base_dir,
                             "mi", "instrument",
-                            self.driver_make.lower(),
+                            self.relative_driver_path())
+
+    def relative_driver_path(self):
+        return os.path.join(self.driver_make.lower(),
                             self.driver_model.lower(),
                             self.driver_name.lower())
-        
+
     def idk_dir(self):
         """
         @brief directory to store the idk driver configuration
@@ -92,7 +95,7 @@ class Metadata():
     ###
     #   Private Methods
     ###
-    def __init__(self, driver_make = None, driver_model = None, driver_name = None):
+    def __init__(self, driver_make = None, driver_model = None, driver_name = None, base_dir = Config().base_dir()):
         """
         @brief Constructor
         """
@@ -103,6 +106,7 @@ class Metadata():
         self.driver_name = driver_name
         self.notes = None
         self.version = 0
+        self.base_dir = base_dir
 
         if(driver_make and driver_model and driver_name):
             log.debug("Construct from parameters")
@@ -151,6 +155,10 @@ class Metadata():
         @brief Confirm the metadata entered is correct.  Run from the console
         @retval True if the user confirms otherwise False.
         """
+        if self.driver_name.find('/') != -1 or self.driver_name.find('\\') != -1 or self.driver_name.find('\0') != -1 or self.driver_name.find(' ') != -1:
+            print ( "Driver names cannot contain '/', '\', space, or null chars" )
+            return False
+
         print ( "\nYou Have entered:\n " )
         self.display_metadata();
         return prompt.yes_no( "\nIs this metadata correct? (y/n)" )
@@ -182,7 +190,7 @@ class Metadata():
 
         if not os.path.exists(self.driver_dir()):
             os.makedirs(self.driver_dir())
-            
+
         if not os.path.exists(self.idk_dir()):
             os.makedirs(self.idk_dir())
 
@@ -212,18 +220,19 @@ class Metadata():
         if( infile ):
             inputFile = infile
         else:
+            log.info("Read from metadata file: %s", self.current_metadata_path())
             inputFile = self.current_metadata_path()
 
         try:
-            infile = open( inputFile )
+            fd = open( inputFile )
         except IOError:
             return True
 
-        input = yaml.load( infile )
+        input = yaml.load( fd )
 
         if( input ):
             self._init_from_yaml( input )
-            infile.close()
+            fd.close()
 
 
     def get_from_console(self):
