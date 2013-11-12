@@ -52,16 +52,12 @@ contiguous records.
 __author__ = 'Bill French'
 __license__ = 'Apache 2.0'
 
-import os
 import re
 import yaml
-import time
 import ntplib
-import datetime
+import time
 from dateutil import parser
-from dateutil import tz
 
-import mi.core.common
 from mi.core.instrument.data_particle import DataParticle
 
 from mi.core.log import get_logger ; log = get_logger()
@@ -265,6 +261,7 @@ class ResultSet(object):
         particle_dict = self._particle_as_dict(particle)
         particle_timestamp = particle_dict.get('internal_timestamp')
         expected_time = particle_def.get('internal_timestamp')
+        allow_diff = .000001
 
         # Verify the timestamp
         if particle_timestamp and not expected_time:
@@ -274,8 +271,8 @@ class ResultSet(object):
 
         # If we have a timestamp AND expect one then compare values
         elif (particle_timestamp and
-              particle_timestamp != self._string_to_ntp_date_time(expected_time)):
-            errors.append("expected internal_timestamp mismatch, %f != %f (%f)" %
+              (particle_timestamp - self._string_to_ntp_date_time(expected_time)) > allow_diff):
+            errors.append("expected internal_timestamp mismatch, %.9f != %.9f (%.9f)" %
                 (self._string_to_ntp_date_time(expected_time), particle_timestamp,
                  self._string_to_ntp_date_time(expected_time)- particle_timestamp))
 
@@ -330,49 +327,76 @@ class ResultSet(object):
             for key in expected_keys:
                 expected_value = particle_def[key]
                 particle_value = pv[key]
-                if expected_value != particle_value:
-                    errors.append("%s value mismatch, %s != %s (decimals may be rounded)" % (key, expected_value, particle_value))
-
-
+                log.debug("Verify value for '%s'", key)
+                e = self._verify_value(expected_value, particle_value)
+                if e:
+                    errors.append("'%s' %s"  % (key, e))
 
         return errors
 
+    def _verify_value(self, expected_value, particle_value):
+        """
+        Verify a value matches what we expect.  If the expected value (from the yaml)
+        is a dict then we expect the value to be in a 'value' field.  Otherwise just
+        use the parameter as a raw value.
+
+        when passing a dict you can specify a 'round' factor.
+        """
+        if isinstance(expected_value, dict):
+            ex_value = expected_value['value']
+            round_factor = expected_value.get('round')
+        else:
+            ex_value = expected_value
+            round_factor = None
+
+        if ex_value is None:
+            log.debug("No value to compare, ignoring")
+            return None
+
+        log.debug("Test %s == %s", ex_value, particle_value)
+
+        if round_factor is not None and particle_value is not None:
+            particle_value = round(particle_value, round_factor)
+            log.debug("rounded value to %s", particle_value)
+
+        if ex_value != particle_value:
+            return "value mismatch, %s != %s (decimals may be rounded)" % (ex_value, particle_value)
+
+        return None
+
     def _string_to_ntp_date_time(self, datestr):
         """
-        Extract a date tuple from a formatted date string.
-        @param str a string containing date information
-        @retval a date tuple.
+        Extract an ntp date from a ISO8601 formatted date string.
+        @param str an ISO8601 formatted string containing date information
+        @retval an ntp date number (seconds since jan 1 1900)
         @throws InstrumentParameterException if datestr cannot be formatted to
         a date.
         """
         if not isinstance(datestr, str):
             raise IOError('Value %s is not a string.' % str(datestr))
+        if not DATE_MATCHER.match(datestr):
+            raise ValueError("date string not in ISO8601 format YYYY-MM-DDTHH:MM:SS.SSSSZ")
+
         try:
-            localtime_offset = self._parse_time("1970-01-01T00:00:00.00")
-            converted_time = self._parse_time(datestr)
-            adjusted_time = converted_time - localtime_offset
-            timestamp = ntplib.system_to_ntp_time(adjusted_time)
+            # This assumes input date string are in UTC (=GMT)
+            if datestr[-1:] != 'Z':
+                datestr += 'Z'
+
+            # the parsed date time represents a GMT time, but strftime
+            # does not take timezone into account, so these are seconds from the
+            # local start of 1970
+            local_sec = float(parser.parse(datestr).strftime("%s.%f"))
+            # remove the local time zone to convert to gmt (seconds since gmt jan 1 1970)
+            gmt_sec = local_sec - time.timezone
+            # convert to ntp (seconds since gmt jan 1 1900)
+            timestamp = ntplib.system_to_ntp_time(gmt_sec)
 
         except ValueError as e:
             raise ValueError('Value %s could not be formatted to a date. %s' % (str(datestr), e))
 
-        log.debug("converting time string '%s', unix_ts: %s ntp: %s", datestr, adjusted_time, timestamp)
+        log.debug("converting time string '%s', unix_ts: %s ntp: %s", datestr, gmt_sec, timestamp)
 
         return timestamp
-
-    def _parse_time(self, datestr):
-        if not DATE_MATCHER.match(datestr):
-            raise ValueError("date string not in ISO8601 format YYYY-MM-DDTHH:MM:SS.SSSSZ")
-        else:
-            log.debug("Match: %s", datestr)
-
-        if datestr[-1:] != 'Z':
-            datestr += 'Z'
-
-        log.debug("Converting time string: %s", datestr)
-        dt = parser.parse(datestr)
-        elapse = float(dt.strftime("%s.%f"))
-        return elapse
 
     def _particle_as_dict(self, particle):
         if isinstance(particle, dict):
