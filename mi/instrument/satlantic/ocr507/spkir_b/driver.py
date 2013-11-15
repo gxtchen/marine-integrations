@@ -399,7 +399,7 @@ class SpkirBSampleDataParticle(DataParticle):
                 # a loop to fill in the channel sample
                 while (num_channels > 0) :
                     single_var_matches[channel_list[channel_index]] = \
-                        pow(2,24) * ord(binary_str[index]) + pow(2, 26) * ord(binary_str[index+1]) + \
+                        pow(2,24) * ord(binary_str[index]) + pow(2, 16) * ord(binary_str[index+1]) + \
                         pow(2,8) * ord(binary_str[index+2]) + ord(binary_str[index+3]) 
                     index += 4
                     channel_index += 1
