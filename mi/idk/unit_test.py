@@ -2678,8 +2678,10 @@ class InstrumentDriverQualificationTestCase(InstrumentDriverTestCase):
         end_time = time.time() + timeout
         agent_state = None
         resource_state = None
+        loopcount = 1
 
         while(time.time() <= end_time):
+            log.error("loop count: %d", loopcount)
             agent_state = self.instrument_agent_client.get_agent_state()
 
             resource_state = self.instrument_agent_client.get_resource_state(timeout=90)
@@ -2692,6 +2694,7 @@ class InstrumentDriverQualificationTestCase(InstrumentDriverTestCase):
             log.debug("state mismatch, waiting for state to transition. Current time: %s, end time: %s",
                       time.time(), end_time)
             gevent.sleep(3)
+            loopcount+= 1
 
         if(agent_state != target_agent_state):
             log.error("Failed to transition agent state to %s, current state: %s", target_agent_state, agent_state)
@@ -3093,7 +3096,7 @@ class InstrumentDriverQualificationTestCase(InstrumentDriverTestCase):
         self.assert_direct_access_start_telnet(timeout=600)
         self.assertTrue(self.tcp_client)
         self.tcp_client.disconnect()
-        self.assert_state_change(ResourceAgentState.COMMAND, DriverProtocolState.COMMAND, 20)
+        self.assert_state_change(ResourceAgentState.COMMAND, DriverProtocolState.COMMAND, 50)
 
     def test_agent_save_and_restore(self):
         """
